@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+vendor/
+monitor.json
+fleet.json
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
