@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#172c31">
+    <title>Acceso | Centro de mando Screenly</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260619.2">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260619.2">
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260619.2">
+    <link rel="stylesheet" href="login.css?v=20260619">
+  </head>
+  <body>
+    <main class="login-layout">
+      <section class="identity" aria-label="Centro de mando Screenly">
+        <img src="favicon.ico?v=20260619" alt="FEVAL">
+        <div>
+          <span>FEVAL</span>
+          <h1>Centro de mando<br>Screenly</h1>
+          <p>Administracion central de pantallas</p>
+        </div>
+      </section>
+
+      <section class="login-panel">
+        <form id="loginForm" class="login-form">
+          <header>
+            <span class="eyebrow">Acceso restringido</span>
+            <h2>Iniciar sesion</h2>
+          </header>
+
+          <label for="loginEmail">Correo electronico</label>
+          <input id="loginEmail" name="email" type="email" autocomplete="username" required autofocus>
+
+          <label for="loginPassword">Contrasena</label>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+
+          <label class="show-password">
+            <input id="showPassword" type="checkbox">
+            <span>Mostrar contrasena</span>
+          </label>
+
+          <p id="loginError" class="login-error" role="alert" hidden></p>
+          <button id="loginButton" type="submit">Entrar</button>
+        </form>
+      </section>
+    </main>
+    <script src="login.js?v=20260619"></script>
+  </body>
+</html>

@@ -14,22 +14,23 @@ const state = {
 
 let refreshToken = 0
 let selectionRefreshTimer = null
+let fleetAbortController = null
 
 const el = Object.fromEntries([
-  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'selectAllBtn', 'mobileMenuBtn',
+  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
   'manageHostsBtn', 'fleetDialog', 'hostManageList', 'hostAddForm', 'newHostName', 'newHostIp',
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
   'libraryView', 'monitorView', 'monitorGrid', 'screensView', 'onlineCount', 'activeCount', 'scheduledCount',
-  'offlineCount', 'allBadge', 'activeBadge', 'inactiveBadge', 'searchInput',
+  'offlineCount', 'allBadge', 'activeBadge', 'scheduledBadge', 'inactiveBadge', 'searchInput',
   'screenFilter', 'sortSelect', 'autoRefreshToggle', 'bulkBar', 'selectedCount', 'bulkEnableBtn', 'bulkDisableBtn',
   'bulkDeleteBtn', 'selectVisible', 'assetsBody', 'statusGrid', 'assetDialog',
   'assetForm', 'assetFile', 'assetUrl', 'fileName', 'fileSource', 'urlSource',
-  'assetName', 'startDate', 'endDate', 'duration', 'enabled', 'targetSummary',
+  'assetName', 'startDate', 'endDate', 'duration', 'enabled', 'targetSummary', 'uploadStatus',
   'submitAssetBtn', 'editDialog', 'editForm', 'editHost', 'editAssetId',
   'editHostLabel', 'editName', 'editStartDate', 'editEndDate', 'editDuration',
   'editEnabled', 'confirmDialog', 'confirmTitle', 'confirmText', 'confirmAccept',
-  'toastRegion',
+  'toastRegion', 'logoutBtn',
 ].map((id) => [id, document.getElementById(id)]))
 
 function fleetHosts() {
@@ -81,6 +82,8 @@ function allAssets() {
 function assetStatus(asset) {
   if (!isEnabled(asset)) return 'inactive'
   const start = parseDate(asset.start_date)
+  const end = parseDate(asset.end_date)
+  if (end && end.getFullYear() < 9999 && end.getTime() < Date.now()) return 'inactive'
   if (start && start.getTime() > Date.now()) return 'scheduled'
   return 'active'
 }
@@ -89,7 +92,7 @@ function visibleAssets() {
   const query = state.search.toLocaleLowerCase('es')
   const items = allAssets().filter((item) => {
     const status = assetStatus(item.asset)
-    const matchesStatus = state.filter === 'all' || state.filter === status || (state.filter === 'active' && status === 'scheduled')
+    const matchesStatus = state.filter === 'all' || state.filter === status
     const name = String(item.asset.name || item.asset.title || item.asset.uri || '').toLocaleLowerCase('es')
     return matchesStatus && (state.screen === 'all' || state.screen === item.host) && name.includes(query)
   })
@@ -118,8 +121,16 @@ function renderHosts() {
       <i class="host-state ${status}" aria-hidden="true"></i>
     </div>`
   }).join('')
+  updateSelectAllButton()
   updateScreenFilter()
   renderHostManager()
+}
+
+function updateSelectAllButton() {
+  const selected = selectedHosts().length
+  const allSelected = state.hosts.length > 0 && selected === state.hosts.length
+  el.selectAllBtn.textContent = allSelected ? 'Ninguna' : 'Todas'
+  el.selectAllBtn.setAttribute('aria-label', allSelected ? 'Deseleccionar todas las pantallas' : 'Seleccionar todas las pantallas')
 }
 
 function updateScreenFilter() {
@@ -140,7 +151,8 @@ function render() {
   el.activeCount.textContent = active
   el.scheduledCount.textContent = scheduled
   el.allBadge.textContent = assets.length
-  el.activeBadge.textContent = active + scheduled
+  el.activeBadge.textContent = active
+  el.scheduledBadge.textContent = scheduled
   el.inactiveBadge.textContent = inactive
   renderHosts()
   renderAssets()
@@ -153,6 +165,7 @@ function renderAssets() {
   if (!items.length) {
     el.assetsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><strong>No hay contenidos que mostrar</strong><span>Prueba otro filtro o anade un contenido nuevo.</span></div></td></tr>`
     el.selectVisible.checked = false
+    el.selectVisible.indeterminate = false
     return
   }
 
@@ -182,7 +195,9 @@ function renderAssets() {
       </div></td>
     </tr>`
   }).join('')
-  el.selectVisible.checked = items.every((item) => state.selected.has(assetKey(item.host, item.asset)))
+  const selectedVisible = items.filter((item) => state.selected.has(assetKey(item.host, item.asset))).length
+  el.selectVisible.checked = selectedVisible === items.length
+  el.selectVisible.indeterminate = selectedVisible > 0 && selectedVisible < items.length
 }
 
 function renderScreens() {
@@ -193,12 +208,13 @@ function renderScreens() {
   el.statusGrid.innerHTML = state.results.map((result) => {
     const assets = result.assets || []
     const record = hostRecord(result.host)
-    const active = assets.filter((asset) => assetStatus(asset) !== 'inactive').length
+    const active = assets.filter((asset) => assetStatus(asset) === 'active').length
     const connectionLabel = result.ok ? 'En linea' : result.authRequired ? 'Protegida' : 'Sin conexion'
     const connectionClass = result.ok ? 'active' : result.authRequired ? 'scheduled' : 'inactive'
     return `<article class="screen-card">
       <div class="screen-card-head"><div><h3>${escapeHtml(record.name)}</h3><p>${result.host}</p></div><span class="status-pill ${connectionClass}">${connectionLabel}</span></div>
-      <div class="screen-card-stats"><div><strong>${result.ok ? `API ${result.version}` : '-'}</strong><small>Version detectada</small></div><div><strong>${result.ok ? active : '-'}</strong><small>Activos</small></div><div><strong>${result.ok ? assets.length : '-'}</strong><small>Totales</small></div><div><strong>${result.ok ? 'Disponible' : result.authRequired ? 'Introducir clave' : 'Revisar red'}</strong><small>Estado</small></div></div>
+      <div class="screen-card-stats"><div><strong>${result.ok ? `API ${result.version}` : '-'}</strong><small>Version detectada</small></div><div><strong>${result.ok ? active : '-'}</strong><small>En emision</small></div><div><strong>${result.ok ? assets.length : '-'}</strong><small>Totales</small></div><div><strong>${result.ok ? 'Disponible' : result.authRequired ? 'Introducir clave' : 'Revisar red'}</strong><small>Estado</small></div></div>
+      ${result.ok ? '' : `<p class="screen-error" title="${escapeHtml(result.error || '')}">${escapeHtml(result.error || 'No se ha podido consultar esta pantalla.')}</p>`}
       <button class="manage-screen secondary-button" type="button" data-manage-host="${result.host}">Administrar esta pantalla</button>
     </article>`
   }).join('')
@@ -220,7 +236,7 @@ function renderMonitor() {
     const record = hostRecord(host)
     const result = resultMap.get(host)
     if (!result) return monitorShell(record, host, '<div class="monitor-placeholder"><span class="monitor-spinner"></span><strong>Consultando reproductor</strong></div>', 'Consultando')
-    if (!result.ok) return monitorShell(record, host, '<div class="monitor-placeholder error"><span>!</span><strong>Sin senal del reproductor</strong><small>Revisa la red o la contrasena</small></div>', 'Sin conexion', 'inactive')
+    if (!result.ok) return monitorShell(record, host, `<div class="monitor-placeholder error"><span>!</span><strong>Screenly no responde</strong><small>${escapeHtml(result.error || 'Revisa la red y que la Raspberry este encendida')}</small></div>`, 'Sin conexion', 'inactive')
     if (!result.asset) return monitorShell(record, host, '<div class="monitor-placeholder"><span>&#9633;</span><strong>Sin contenido en reproduccion</strong></div>', 'En linea')
 
     const asset = result.asset
@@ -238,7 +254,7 @@ function renderMonitor() {
     } else if (result.previewUrl && String(result.previewUrl).startsWith('http')) {
       visual = `<img class="monitor-image" src="${escapeHtml(result.previewUrl)}" alt="Vista actual de ${name}">`
     } else {
-      visual = `<div class="monitor-video"><span class="video-glyph">&#9654;</span><span>${escapeHtml(type.label)}</span><small>La API no ofrece imagen ni posicion HDMI en directo</small></div>`
+      visual = `<div class="monitor-video"><span class="video-glyph">&#9654;</span><span>${escapeHtml(type.label)}</span><small>${escapeHtml(monitorHint(result.monitor))}</small></div>`
     }
     const position = Number(telemetry?.position || 0)
     const duration = Number(telemetry?.duration || asset.duration || 0)
@@ -258,6 +274,15 @@ function renderMonitor() {
     }
   })
   syncLivePlayers()
+}
+
+function monitorHint(monitor) {
+  if (!monitor || monitor.reason === 'unconfigured') return 'Instala el agente para ver imagen y posicion sincronizadas'
+  if (monitor.reason === 'unauthorized') return 'El agente responde, pero su token no coincide'
+  if (!monitor.connected || monitor.reason === 'unreachable') return 'El agente no responde en el puerto 8765'
+  if (monitor.reason === 'player_unavailable') return 'El agente esta activo, pero OMXPlayer no responde'
+  if (monitor.reason === 'asset_not_local') return 'El contenido actual no es un archivo local'
+  return 'El agente esta conectado, pero no ofrece telemetria para este contenido'
 }
 
 function syncLivePlayers() {
@@ -291,20 +316,25 @@ function updateBulkBar() {
   el.bulkBar.hidden = state.selected.size === 0
 }
 
-async function postJson(action, payload) {
+async function readJsonResponse(response, fallback) {
+  const text = await response.text()
+  let data = {}
+  try { data = text ? JSON.parse(text) : {} } catch { data = {} }
+  if (!response.ok) throw new Error(data.error || fallback)
+  return data
+}
+
+async function postJson(action, payload, options = {}) {
   const response = await fetch(`/api/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    signal: options.signal,
   })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || 'Error de servidor')
-  return data
+  return readJsonResponse(response, 'El servidor local no pudo completar la operacion')
 }
 
 async function fleetRequest(url, options = {}) {
   const response = await fetch(url, options)
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || 'No se pudo actualizar la flota')
-  return data
+  return readJsonResponse(response, 'No se pudo actualizar la flota')
 }
 
 async function loadHosts() {
@@ -345,7 +375,7 @@ async function addFleetHost(event) {
     const checkbox = document.querySelector(`.host-check[value="${data.host.host}"]`)
     if (checkbox) checkbox.checked = true
     toast('Raspberry anadida', `${data.host.name} - ${data.host.host}`)
-    await refreshFleet()
+    await refreshFleet(false)
   } catch (error) {
     toast('No se pudo anadir', error.message, 'error')
   }
@@ -373,15 +403,17 @@ async function removeFleetHost(host) {
     await fleetRequest(`/api/hosts/${encodeURIComponent(host)}`, { method: 'DELETE' })
     await loadHosts()
     toast('Pantalla eliminada', `${record.name} ya no aparece en la flota.`)
-    if (selectedHosts().length) await refreshFleet(); else render()
+    if (selectedHosts().length) await refreshFleet(false); else render()
   } catch (error) {
     toast('No se pudo eliminar', error.message, 'error')
   }
 }
 
-async function refreshFleet() {
+async function refreshFleet(showToast = true) {
   const hosts = selectedHosts()
   const token = ++refreshToken
+  if (fleetAbortController) fleetAbortController.abort()
+  fleetAbortController = new AbortController()
   if (!hosts.length) {
     state.results = []
     render()
@@ -390,17 +422,17 @@ async function refreshFleet() {
   }
   setLoading(true)
   try {
-    const data = await postJson('list', { hosts, ...authPayload() })
+    const data = await postJson('list', { hosts, ...authPayload() }, { signal: fleetAbortController.signal })
     if (token !== refreshToken) return
     state.results = data.results || []
     state.selected.clear()
     el.lastUpdated.textContent = `Actualizado ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     render()
     const online = state.results.filter((result) => result.ok).length
-    toast('Consulta terminada', `${online} de ${state.results.length} pantallas en linea.`, online ? 'success' : 'error')
+    if (showToast) toast('Consulta terminada', `${online} de ${state.results.length} pantallas en linea.`, online ? 'success' : 'error')
   } catch (error) {
     if (token !== refreshToken) return
-    toast('No se pudo actualizar', error.message, 'error')
+    if (error.name !== 'AbortError') toast('No se pudo actualizar', error.message, 'error')
   } finally {
     if (token === refreshToken) setLoading(false)
   }
@@ -436,19 +468,19 @@ function configureMonitorTimer() {
   monitorTimer = null
   if (state.view !== 'monitor') return
   monitorTimer = setInterval(() => {
-    if (!document.querySelector('dialog[open]')) refreshNowPlaying(false)
-  }, 1000)
+    if (!document.hidden && !document.querySelector('dialog[open]')) refreshNowPlaying(false)
+  }, 1500)
 }
 
-function refreshActiveView() {
-  return state.view === 'monitor' ? refreshNowPlaying(true) : refreshFleet()
+function refreshActiveView(showToast = true) {
+  return state.view === 'monitor' ? refreshNowPlaying(showToast) : refreshFleet(showToast)
 }
 
 function scheduleSelectionRefresh() {
   if (selectionRefreshTimer) clearTimeout(selectionRefreshTimer)
   selectionRefreshTimer = setTimeout(() => {
     selectionRefreshTimer = null
-    refreshActiveView()
+    refreshActiveView(false)
   }, 450)
 }
 
@@ -462,6 +494,7 @@ function openAssetDialog() {
   const hosts = selectedHosts()
   if (!hosts.length) return toast('Selecciona una pantalla', 'Elige al menos un destino antes de anadir contenido.', 'error')
   el.targetSummary.textContent = `${hosts.length} pantalla${hosts.length === 1 ? '' : 's'} seleccionada${hosts.length === 1 ? '' : 's'}`
+  el.uploadStatus.textContent = ''
   el.assetDialog.showModal()
 }
 
@@ -469,21 +502,25 @@ async function submitAsset(event) {
   event.preventDefault()
   const hosts = selectedHosts()
   if (!hosts.length) return toast('Sin destinos', 'Selecciona al menos una pantalla.', 'error')
+  if (!validSchedule(el.startDate.value, el.endDate.value)) return toast('Programacion no valida', 'La fecha de fin debe ser posterior a la fecha de inicio.', 'error')
   el.submitAssetBtn.disabled = true
+  el.submitAssetBtn.textContent = 'Enviando...'
+  el.assetForm.setAttribute('aria-busy', 'true')
+  el.uploadStatus.textContent = `Enviando a ${hosts.length} pantalla${hosts.length === 1 ? '' : 's'}. No cierres esta ventana.`
   try {
     let payload
     if (state.source === 'file') {
       if (!el.assetFile.files[0]) throw new Error('Selecciona un archivo de video o imagen.')
       const form = new FormData(el.assetForm)
+      const auth = authPayload()
       form.set('hosts', hosts.join(','))
-      form.set('apiVersion', el.apiVersion.value)
-      form.set('username', el.username.value.trim())
-      form.set('password', el.password.value)
+      form.set('apiVersion', auth.apiVersion)
+      form.set('username', auth.username)
+      form.set('password', auth.password)
       form.set('enabled', el.enabled.checked ? '1' : '0')
       form.set('skipAssetCheck', '1')
       const response = await fetch('/api/upload', { method: 'POST', body: form })
-      payload = await response.json()
-      if (!response.ok) throw new Error(payload.error || 'Error durante la subida')
+      payload = await readJsonResponse(response, 'Error durante la subida')
     } else {
       if (!el.assetUrl.value.trim()) throw new Error('Indica una direccion web valida.')
       payload = await postJson('url', {
@@ -493,30 +530,55 @@ async function submitAsset(event) {
         ...authPayload(),
       })
     }
-    const ok = (payload.results || []).filter((item) => item.ok).length
-    toast('Contenido procesado', `${ok} de ${hosts.length} pantallas completadas.`, ok ? 'success' : 'error')
+    const { results, ok, failed, details } = resultSummary(payload, hosts.length)
+    if (failed.length || results.length !== hosts.length) {
+      await refreshFleet(false)
+      throw new Error(`${ok} de ${hosts.length} pantallas completadas.${details ? ` ${details}` : ''}`)
+    }
+    toast('Contenido anadido', `Disponible en ${ok} pantalla${ok === 1 ? '' : 's'}.`, 'success')
     el.assetDialog.close()
     el.assetForm.reset()
     el.endDate.value = '9999-01-01T00:00'
     el.enabled.checked = true
-    await refreshFleet()
+    await refreshFleet(false)
   } catch (error) {
     toast('No se pudo anadir', error.message, 'error')
+    el.uploadStatus.textContent = error.message
   } finally {
     el.submitAssetBtn.disabled = false
+    el.submitAssetBtn.textContent = 'Anadir contenido'
+    el.assetForm.removeAttribute('aria-busy')
   }
 }
 
 async function runTargets(operation, targets, extra = {}) {
   if (!targets.length) return
+  setBulkBusy(true)
   try {
     const data = await postJson('asset', { operation, targets, ...extra, ...authPayload() })
-    const ok = (data.results || []).filter((item) => item.ok).length
-    toast('Operacion terminada', `${ok} de ${targets.length} cambios completados.`, ok ? 'success' : 'error')
-    await refreshFleet()
+    const { ok, failed, details } = resultSummary(data, targets.length)
+    const type = failed.length ? (ok ? 'warning' : 'error') : 'success'
+    const message = `${ok} de ${targets.length} cambios completados.${details ? ` ${details}` : ''}`
+    toast(failed.length ? 'Operacion incompleta' : 'Operacion terminada', message, type)
+    await refreshFleet(false)
   } catch (error) {
     toast('No se pudo completar', error.message, 'error')
+  } finally {
+    setBulkBusy(false)
   }
+}
+
+function resultSummary(payload, expected) {
+  const results = Array.isArray(payload.results) ? payload.results : []
+  const ok = results.filter((item) => item.ok).length
+  const failed = results.filter((item) => !item.ok)
+  if (results.length < expected) failed.push({ host: 'Panel', error: 'Faltan respuestas de algunas pantallas' })
+  const details = failed.slice(0, 3).map((item) => `${item.host}: ${item.error || 'Error desconocido'}`).join(' | ')
+  return { results, ok, failed, details }
+}
+
+function setBulkBusy(busy) {
+  ;[el.bulkEnableBtn, el.bulkDisableBtn, el.bulkDeleteBtn].forEach((button) => { button.disabled = busy })
 }
 
 function targetFrom(host, id) {
@@ -551,6 +613,7 @@ function openEdit(key) {
 
 async function submitEdit(event) {
   event.preventDefault()
+  if (!validSchedule(el.editStartDate.value, el.editEndDate.value)) return toast('Programacion no valida', 'La fecha de fin debe ser posterior a la fecha de inicio.', 'error')
   const update = {
     name: el.editName.value.trim(), start_date: el.editStartDate.value,
     end_date: el.editEndDate.value, duration: Number(el.editDuration.value || 0),
@@ -603,7 +666,7 @@ function manageOnly(host) {
   state.selected.clear()
   switchView('library')
   updatePageContext()
-  refreshFleet()
+  refreshFleet(false)
 }
 
 function updatePageContext() {
@@ -649,7 +712,7 @@ async function movePlaylistAsset(key, direction) {
       hosts: [item.host], orderedIds: swapped.map((candidate) => assetId(candidate.asset)), ...authPayload(),
     })
     toast('Playlist actualizada', `${item.asset.name || 'Contenido'} se ha movido.`)
-    await refreshFleet()
+    await refreshFleet(false)
   } catch (error) {
     toast('No se pudo reordenar', error.message, 'error')
   }
@@ -663,7 +726,7 @@ function configureAutoRefresh() {
   localStorage.setItem('fleetboard-auto-refresh', el.autoRefreshToggle.checked ? '1' : '0')
   if (!el.autoRefreshToggle.checked) return
   autoRefreshTimer = setInterval(() => {
-    if (!state.loading && !document.querySelector('dialog[open]')) refreshFleet()
+    if (!document.hidden && !state.loading && !document.querySelector('dialog[open]')) refreshFleet(false)
   }, 60000)
 }
 
@@ -679,7 +742,11 @@ function confirmAction(title, text, acceptLabel = 'Eliminar') {
 
 function switchView(view) {
   state.view = view
-  document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === view))
+  document.querySelectorAll('.nav-item').forEach((button) => {
+    const active = button.dataset.view === view
+    button.classList.toggle('active', active)
+    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current')
+  })
   el.libraryView.classList.toggle('active', view === 'library')
   el.monitorView.classList.toggle('active', view === 'monitor')
   el.screensView.classList.toggle('active', view === 'screens')
@@ -688,9 +755,39 @@ function switchView(view) {
   if (view === 'library') updatePageContext()
   else el.playbackControls.hidden = true
   el.addAssetBtn.hidden = view !== 'library'
-  if (view === 'monitor') refreshNowPlaying(false)
+  if (view === 'monitor') {
+    renderMonitor()
+    refreshNowPlaying(false)
+  }
   configureMonitorTimer()
-  document.querySelector('.sidebar').classList.remove('open')
+  closeSidebar()
+}
+
+function toggleSidebar() {
+  const sidebar = document.querySelector('.sidebar')
+  const open = !sidebar.classList.contains('open')
+  sidebar.classList.toggle('open', open)
+  sidebar.dataset.open = String(open)
+  sidebar.style.transform = open ? 'translateX(0)' : ''
+  el.sidebarBackdrop.classList.toggle('visible', open)
+  el.sidebarBackdrop.dataset.visible = String(open)
+  el.sidebarBackdrop.style.visibility = open ? 'visible' : ''
+  el.sidebarBackdrop.style.opacity = open ? '1' : ''
+  el.sidebarBackdrop.style.pointerEvents = open ? 'auto' : ''
+  el.mobileMenuBtn.setAttribute('aria-expanded', String(open))
+}
+
+function closeSidebar() {
+  const sidebar = document.querySelector('.sidebar')
+  sidebar.classList.remove('open')
+  sidebar.dataset.open = 'false'
+  sidebar.style.transform = ''
+  el.sidebarBackdrop.classList.remove('visible')
+  el.sidebarBackdrop.dataset.visible = 'false'
+  el.sidebarBackdrop.style.visibility = ''
+  el.sidebarBackdrop.style.opacity = ''
+  el.sidebarBackdrop.style.pointerEvents = ''
+  el.mobileMenuBtn.setAttribute('aria-expanded', 'false')
 }
 
 function switchSource(source) {
@@ -702,9 +799,10 @@ function switchSource(source) {
 
 function toast(title, message, type = 'success') {
   const node = document.createElement('div')
-  node.className = `toast ${type === 'error' ? 'error' : ''}`
+  node.className = `toast ${type}`
   node.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(message)}</span>`
   el.toastRegion.append(node)
+  while (el.toastRegion.children.length > 4) el.toastRegion.firstElementChild.remove()
   setTimeout(() => node.remove(), 4500)
 }
 
@@ -727,10 +825,24 @@ function formatDuration(value) {
   return minutes ? `${minutes} min${rest ? ` ${rest} s` : ''}` : `${rest} s`
 }
 
+function formatBytes(value) {
+  const bytes = Number(value || 0)
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
 function parseDate(value) {
   if (!value) return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
+}
+
+function validSchedule(startValue, endValue) {
+  const start = parseDate(startValue)
+  const end = parseDate(endValue)
+  return !start || !end || end.getTime() >= start.getTime()
 }
 
 function formatDate(value, fallback) {
@@ -756,11 +868,15 @@ document.querySelectorAll('[data-close]').forEach((button) => button.addEventLis
 document.querySelectorAll('[data-source]').forEach((button) => button.addEventListener('click', () => switchSource(button.dataset.source)))
 document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => {
   state.filter = button.dataset.filter
-  document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item === button))
+  document.querySelectorAll('[data-filter]').forEach((item) => {
+    const active = item === button
+    item.classList.toggle('active', active)
+    item.setAttribute('aria-selected', String(active))
+  })
   renderAssets()
 }))
 
-el.refreshBtn.addEventListener('click', refreshActiveView)
+el.refreshBtn.addEventListener('click', () => refreshActiveView(true))
 el.manageHostsBtn.addEventListener('click', () => { renderHostManager(); el.fleetDialog.showModal() })
 el.hostAddForm.addEventListener('submit', addFleetHost)
 el.hostManageList.addEventListener('click', (event) => {
@@ -775,16 +891,22 @@ el.nextAssetBtn.addEventListener('click', () => controlPlayback('next'))
 el.addAssetBtn.addEventListener('click', openAssetDialog)
 el.assetForm.addEventListener('submit', submitAsset)
 el.editForm.addEventListener('submit', submitEdit)
-el.mobileMenuBtn.addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'))
+el.mobileMenuBtn.addEventListener('click', toggleSidebar)
+el.sidebarBackdrop.addEventListener('click', closeSidebar)
 el.searchInput.addEventListener('input', () => { state.search = el.searchInput.value; renderAssets() })
 el.screenFilter.addEventListener('change', () => { state.screen = el.screenFilter.value; renderAssets() })
 el.sortSelect.addEventListener('change', () => { state.sort = el.sortSelect.value; renderAssets() })
 el.autoRefreshToggle.addEventListener('change', configureAutoRefresh)
 el.useAuth.addEventListener('change', () => {
   el.authFields.hidden = !el.useAuth.checked
+  if (!el.useAuth.checked) el.password.value = ''
   refreshActiveView()
 })
-el.assetFile.addEventListener('change', () => { el.fileName.textContent = el.assetFile.files[0]?.name || 'MP4, MOV, WEBM, JPG o PNG' })
+el.assetFile.addEventListener('change', () => {
+  const file = el.assetFile.files[0]
+  el.fileName.textContent = file ? `${file.name} - ${formatBytes(file.size)}` : 'MP4, MOV, WEBM, JPG o PNG'
+  if (file && !el.assetName.value.trim()) el.assetName.value = file.name.replace(/\.[^.]+$/, '')
+})
 el.hostList.addEventListener('change', () => {
   state.selected.clear()
   state.screen = 'all'
@@ -794,6 +916,7 @@ el.hostList.addEventListener('change', () => {
   if (state.view === 'monitor') renderMonitor()
   renderAssets()
   el.targetSummary.textContent = `${selectedHosts().length} pantallas seleccionadas`
+  updateSelectAllButton()
   scheduleSelectionRefresh()
 })
 el.hostList.addEventListener('click', (event) => {
@@ -802,12 +925,15 @@ el.hostList.addEventListener('click', (event) => {
 })
 el.selectAllBtn.addEventListener('click', () => {
   const checks = [...document.querySelectorAll('.host-check')]
-  checks.forEach((input) => { input.checked = true })
+  const select = checks.some((input) => !input.checked)
+  checks.forEach((input) => { input.checked = select })
   state.screen = 'all'
   el.screenFilter.value = 'all'
+  state.selected.clear()
+  updateSelectAllButton()
   updatePageContext()
   el.targetSummary.textContent = `${selectedHosts().length} pantallas seleccionadas`
-  refreshActiveView()
+  refreshActiveView(false)
 })
 el.selectVisible.addEventListener('change', () => {
   visibleAssets().forEach((item) => {
@@ -852,13 +978,26 @@ el.monitorGrid.addEventListener('click', (event) => {
   const button = event.target.closest('[data-monitor-host]')
   if (button) manageOnly(button.dataset.monitorHost)
 })
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeSidebar()
+})
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.view === 'monitor') refreshNowPlaying(false)
+})
+el.logoutBtn.addEventListener('click', async () => {
+  try {
+    await fetch('/api/logout', { method: 'POST' })
+  } finally {
+    window.location.replace('/login')
+  }
+})
 
 async function initialize() {
   try {
     el.autoRefreshToggle.checked = localStorage.getItem('fleetboard-auto-refresh') === '1'
     configureAutoRefresh()
     await loadHosts()
-    if (state.hosts.length) await refreshFleet()
+    if (state.hosts.length) await refreshFleet(false)
     else render()
   } catch (error) {
     toast('No se pudo iniciar', error.message, 'error')

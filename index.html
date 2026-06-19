@@ -4,15 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#172c31">
-    <title>Fleetboard</title>
-    <link rel="stylesheet" href="styles.css">
+    <title>Centro de mando Screenly</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260619.2">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260619.2">
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260619.2">
+    <link rel="stylesheet" href="styles.css?v=20260619.1">
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
+      <aside id="appSidebar" class="sidebar">
         <div class="brand">
-          <span class="brand-mark">F</span>
-          <div><strong>Fleetboard</strong><small>Screenly Manager</small></div>
+          <img class="brand-mark" src="favicon.ico?v=20260619" alt="FEVAL">
+          <div><strong>Centro de mando Screenly</strong><small>FEVAL</small></div>
         </div>
 
         <nav class="main-nav" aria-label="Navegacion principal">
@@ -53,12 +56,14 @@
           <span class="local-dot"></span>
           <span>Servidor local</span>
           <small>127.0.0.1:5000</small>
+          <button id="logoutBtn" class="logout-button" type="button">Cerrar sesion</button>
         </div>
       </aside>
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Cerrar menu" tabindex="-1"></button>
 
       <main class="main-area">
         <header class="topbar">
-          <button id="mobileMenuBtn" class="icon-button mobile-only" type="button" title="Abrir menu" aria-label="Abrir menu">&#9776;</button>
+          <button id="mobileMenuBtn" class="icon-button mobile-only" type="button" title="Abrir menu" aria-label="Abrir menu" aria-controls="appSidebar" aria-expanded="false">&#9776;</button>
           <div class="page-heading">
             <h1 id="pageTitle">Biblioteca de contenidos</h1>
             <p id="pageSubtitle">Gestion conjunta de 6 pantallas</p>
@@ -85,9 +90,10 @@
           <section class="content-section">
             <div class="section-toolbar">
               <div class="segmented" role="tablist" aria-label="Estado de contenidos">
-                <button class="segment active" type="button" data-filter="all">Todos <span id="allBadge">0</span></button>
-                <button class="segment" type="button" data-filter="active">Activos <span id="activeBadge">0</span></button>
-                <button class="segment" type="button" data-filter="inactive">Inactivos <span id="inactiveBadge">0</span></button>
+                <button class="segment active" type="button" role="tab" aria-selected="true" data-filter="all">Todos <span id="allBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="active">Activos <span id="activeBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="scheduled">Programados <span id="scheduledBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="inactive">Inactivos <span id="inactiveBadge">0</span></button>
               </div>
               <div class="toolbar-controls">
                 <label class="search-box"><span>&#9906;</span><input id="searchInput" type="search" placeholder="Buscar contenido"></label>
@@ -110,6 +116,7 @@
 
             <div class="table-wrap">
               <table class="asset-table">
+                <caption class="sr-only">Contenidos disponibles en las pantallas seleccionadas</caption>
                 <thead><tr>
                   <th class="check-column"><input id="selectVisible" type="checkbox" aria-label="Seleccionar visibles"></th>
                   <th>Contenido</th><th>Pantalla</th><th>Programacion</th><th>Duracion</th><th>Estado</th><th class="actions-column">Acciones</th>
@@ -157,7 +164,7 @@
             <input id="skipAssetCheck" name="skipAssetCheck" type="hidden" value="1">
           </div>
         </div>
-        <footer class="modal-footer"><span id="targetSummary"></span><div><button class="secondary-button" type="button" data-close="assetDialog">Cancelar</button><button id="submitAssetBtn" class="primary-button" type="submit">Anadir contenido</button></div></footer>
+        <footer class="modal-footer"><span><b id="targetSummary"></b><small id="uploadStatus" class="upload-status" role="status"></small></span><div><button class="secondary-button" type="button" data-close="assetDialog">Cancelar</button><button id="submitAssetBtn" class="primary-button" type="submit">Anadir contenido</button></div></footer>
       </form>
     </dialog>
 
@@ -195,7 +202,7 @@
       </div>
     </dialog>
 
-    <div id="toastRegion" class="toast-region" aria-live="polite"></div>
-    <script src="app.js"></script>
+    <div id="toastRegion" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+    <script src="app.js?v=20260619.1"></script>
   </body>
 </html>

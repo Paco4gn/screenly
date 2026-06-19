@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 vendor/
 monitor.json
+.session_secret
 fleet.json
 .env
 .venv/

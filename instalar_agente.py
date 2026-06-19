@@ -20,8 +20,9 @@ MONITOR_CONFIG = BASE_DIR / "monitor.json"
 FLEET_CONFIG = BASE_DIR / "fleet.json"
 AGENT_FILE = BASE_DIR / "fleet_monitor_agent.py"
 SERVICE = """[Unit]
-Description=Fleetboard read-only playback monitor
-After=network.target screenly-viewer.service
+Description=Centro de mando Screenly - monitor de reproduccion
+After=network-online.target screenly-viewer.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -29,10 +30,16 @@ User=pi
 ExecStart=/usr/bin/python3 /home/pi/fleet_monitor_agent.py
 Restart=always
 RestartSec=2
+NoNewPrivileges=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
 """
+DEFAULT_FLEET = [
+    {"host": "192.168.20.{}".format(number), "name": "Pantalla {}".format(index)}
+    for index, number in enumerate(range(223, 229), start=1)
+]
 
 
 def private_ip(value):
@@ -42,16 +49,28 @@ def private_ip(value):
     return str(address)
 
 
-def load_or_create_token():
+def write_json_atomic(path, data):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def load_or_create_token(host):
     try:
         data = json.loads(MONITOR_CONFIG.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
-    token = str(data.get("token", "")).strip() or secrets.token_urlsafe(32)
-    MONITOR_CONFIG.write_text(
-        json.dumps({"token": token, "port": 8765}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    hosts = data.get("hosts") if isinstance(data.get("hosts"), dict) else {}
+    current = hosts.get(host)
+    current_token = current.get("token") if isinstance(current, dict) else current
+    token = str(current_token or "").strip() or secrets.token_urlsafe(32)
+    hosts[host] = {"token": token}
+    data["hosts"] = hosts
+    data["port"] = 8765
+    write_json_atomic(MONITOR_CONFIG, data)
     return token
 
 
@@ -60,7 +79,7 @@ def deploy(host, username, password, token):
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
         host, username=username, password=password, timeout=10,
-        look_for_keys=False, allow_agent=False,
+        look_for_keys=False, allow_agent=False, auth_timeout=10, banner_timeout=10,
     )
     try:
         sftp = client.open_sftp()
@@ -132,22 +151,21 @@ def add_to_panel(host, name):
         try:
             fleet = json.loads(FLEET_CONFIG.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            fleet = []
+            fleet = [dict(item) for item in DEFAULT_FLEET]
+        if not isinstance(fleet, list):
+            fleet = [dict(item) for item in DEFAULT_FLEET]
         item = next((item for item in fleet if item.get("host") == host), None)
         if item:
             item["name"] = name
         else:
             fleet.append({"host": host, "name": name})
-        FLEET_CONFIG.write_text(
-            json.dumps(fleet, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(FLEET_CONFIG, fleet)
         return "Panel actualizado en fleet.json"
 
 
 def main():
     print("=" * 58)
-    print(" INSTALADOR DEL AGENTE FLEETBOARD PARA SCREENLY OSE")
+    print(" INSTALADOR DEL AGENTE CENTRO DE MANDO SCREENLY")
     print("=" * 58)
     try:
         host = private_ip(input("IP de la Raspberry: "))
@@ -160,13 +178,13 @@ def main():
             raise ValueError("La contrasena SSH no puede estar vacia")
 
         print("\n1/3 Conectando y copiando el agente...")
-        token = load_or_create_token()
+        token = load_or_create_token(host)
         deploy(host, username, password, token)
         print("2/3 Servicio instalado y activo.")
         status = verify(host, token)
         print("3/3 Telemetria verificada: {}".format(status))
         print(add_to_panel(host, name))
-        print("\nLISTO. Actualiza Fleetboard y abre 'En pantalla'.")
+        print("\nLISTO. Actualiza Centro de mando Screenly y abre 'En pantalla'.")
         print("La contrasena SSH no se ha guardado.")
         return 0
     except Exception as error:
