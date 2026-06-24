@@ -29,7 +29,9 @@ from werkzeug.security import check_password_hash
 CONFIG_PATH = BASE_DIR / "fleet.json"
 MONITOR_CONFIG_PATH = BASE_DIR / "monitor.json"
 HISTORY_PATH = BASE_DIR / "history.jsonl"
+SETTINGS_PATH = BASE_DIR / "settings.json"
 CONFIG_LOCK = Lock()
+SETTINGS_LOCK = Lock()
 HISTORY_LOCK = Lock()
 CURRENT_ASSET_LOCK = Lock()
 CURRENT_ASSET_CACHE = {}
@@ -196,6 +198,24 @@ def static_file(filename):
 @app.get("/api/hosts")
 def get_hosts():
     return jsonify(hosts=[public_host(item) for item in load_fleet()])
+
+
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(settings=public_settings(load_settings()))
+
+
+@app.patch("/api/settings")
+def update_settings():
+    require_role("admin")
+    data = request.get_json(silent=True) or {}
+    with SETTINGS_LOCK:
+        settings = load_settings()
+        if "defaultAuth" in data and isinstance(data.get("defaultAuth"), dict):
+            settings["defaultAuth"] = clean_auth_config(data["defaultAuth"], settings.get("defaultAuth"))
+        save_settings(settings)
+    append_history("settings_updated", None, "Credenciales globales actualizadas")
+    return jsonify(settings=public_settings(settings))
 
 
 @app.get("/api/history")
@@ -780,6 +800,34 @@ def clean_host_config(item, host=None):
     }
 
 
+def load_settings():
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {"defaultAuth": clean_auth_config(data.get("defaultAuth") if isinstance(data.get("defaultAuth"), dict) else None)}
+
+
+def save_settings(settings):
+    temporary = SETTINGS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, SETTINGS_PATH)
+
+
+def public_settings(settings):
+    auth = settings.get("defaultAuth") if isinstance(settings.get("defaultAuth"), dict) else {}
+    return {
+        "defaultAuth": {
+            "enabled": bool(auth.get("enabled")),
+            "username": str(auth.get("username", "")),
+            "hasPassword": bool(auth.get("password")),
+            "apiVersion": auth.get("apiVersion", "auto"),
+        }
+    }
+
+
 def clean_auth_config(value, existing=None):
     value = value if isinstance(value, dict) else {}
     existing = existing if isinstance(existing, dict) else {}
@@ -934,6 +982,9 @@ def auth_for_host(host, data):
     config = load_host_config(host).get("auth", {})
     if config.get("enabled") and config.get("username"):
         return (config["username"], str(config.get("password", "")))
+    default_auth = load_settings().get("defaultAuth", {})
+    if default_auth.get("enabled") and default_auth.get("username"):
+        return (default_auth["username"], str(default_auth.get("password", "")))
     return None
 
 
@@ -942,6 +993,10 @@ def api_preference_for_host(host, preferred):
         return preferred
     config = load_host_config(host).get("auth", {})
     value = config.get("apiVersion")
+    if value in {"v1.2", "v2"}:
+        return value
+    default_auth = load_settings().get("defaultAuth", {})
+    value = default_auth.get("apiVersion")
     return value if value in {"v1.2", "v2"} else "auto"
 
 

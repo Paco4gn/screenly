@@ -148,6 +148,36 @@ class AppValidationTests(unittest.TestCase):
         self.assertTrue(payload["auth"]["hasPassword"])
         self.assertNotIn("password", payload["auth"])
 
+    def test_default_screen_credentials_are_saved_and_used_without_exposure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            fleet_path = Path(directory) / "fleet.json"
+            fleet_path.write_text(
+                json.dumps([{"host": "192.168.20.223", "name": "Pantalla"}]),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "SETTINGS_PATH", settings_path):
+                with patch.object(app_module, "CONFIG_PATH", fleet_path):
+                    response = self.client.patch(
+                        "/api/settings",
+                        json={
+                            "defaultAuth": {
+                                "enabled": True,
+                                "username": "screenly",
+                                "password": "global-secret",
+                                "apiVersion": "v1.2",
+                            }
+                        },
+                    )
+                    auth = app_module.auth_for_host("192.168.20.223", {})
+                    api = app_module.api_preference_for_host("192.168.20.223", "auto")
+
+        payload = response.get_json()["settings"]["defaultAuth"]
+        self.assertEqual(auth, ("screenly", "global-secret"))
+        self.assertEqual(api, "v1.2")
+        self.assertTrue(payload["hasPassword"])
+        self.assertNotIn("password", payload)
+
     @patch("app.detect_api")
     @patch("app.monitor_status", return_value={"ok": False, "connected": False, "reason": "unconfigured"})
     def test_diagnostics_marks_maintenance_screens(self, monitor_status, detect_api):

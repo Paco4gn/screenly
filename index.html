@@ -49,6 +49,11 @@
           <div id="authFields" class="auth-fields" hidden>
             <label>Usuario<input id="username" autocomplete="off" data-lpignore="true"></label>
             <label>Contrasena<input id="password" type="password" autocomplete="new-password" data-lpignore="true"></label>
+            <div class="auth-actions">
+              <button id="saveGlobalAuthBtn" class="settings-button" type="button">Guardar para Raspberry</button>
+              <button id="clearGlobalAuthBtn" class="settings-button muted" type="button">Quitar</button>
+            </div>
+            <small id="globalAuthStatus" class="settings-note">Sin credenciales guardadas.</small>
           </div>
           <label class="settings-toggle"><span>Actualizar cada minuto</span><input id="autoRefreshToggle" type="checkbox" role="switch"></label>
         </details>

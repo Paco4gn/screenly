@@ -12,6 +12,7 @@ const state = {
   history: [],
   view: 'library',
   role: 'admin',
+  settings: { defaultAuth: { enabled: false, username: '', hasPassword: false, apiVersion: 'auto' } },
   loading: false,
 }
 
@@ -20,7 +21,7 @@ let selectionRefreshTimer = null
 let fleetAbortController = null
 
 const el = Object.fromEntries([
-  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
+  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'saveGlobalAuthBtn', 'clearGlobalAuthBtn', 'globalAuthStatus', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
   'manageHostsBtn', 'fleetDialog', 'hostManageList', 'hostAddForm', 'newHostName', 'newHostIp',
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
@@ -57,6 +58,11 @@ function authPayload() {
     password: el.password.value,
     apiVersion: el.apiVersion.value,
   }
+}
+
+function hostLabel(host) {
+  const record = hostRecord(host)
+  return record.name && record.name !== host ? `${record.name} · ${host}` : host
 }
 
 function canOperate() {
@@ -186,6 +192,7 @@ function renderAssets() {
   const soloHosts = selectedHosts()
   const soloHost = soloHosts.length === 1 ? soloHosts[0] : null
   const orderableCount = soloHost ? allAssets().filter((item) => item.host === soloHost && isCurrentlyActive(item.asset)).length : 0
+  let previousHost = ''
   el.assetsBody.innerHTML = items.map(({ host, asset }) => {
     const id = assetId(asset)
     const key = assetKey(host, asset)
@@ -193,10 +200,13 @@ function renderAssets() {
     const type = assetType(asset)
     const checked = state.selected.has(key) ? 'checked' : ''
     const canOrder = soloHost === host && orderableCount > 1 && isCurrentlyActive(asset)
-    return `<tr data-key="${escapeHtml(key)}">
+    const groupHeader = !soloHost && state.screen === 'all' && host !== previousHost
+      ? `<tr class="screen-group-row"><td colspan="7"><strong>${escapeHtml(hostLabel(host))}</strong><span>${allAssets().filter((item) => item.host === host).length} contenidos</span></td></tr>` : ''
+    previousHost = host
+    return `${groupHeader}<tr data-key="${escapeHtml(key)}">
       <td class="check-column"><input class="row-check" type="checkbox" ${checked} aria-label="Seleccionar ${escapeHtml(asset.name || id)}"></td>
-      <td><div class="asset-title"><span class="asset-thumb">${type.icon}</span><span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} - ${escapeHtml(host)} - ${statusLabel(status)} - ${escapeHtml(id)}</small></span></div></td>
-      <td><span class="host-chip">${escapeHtml(host)}</span></td>
+      <td><div class="asset-title"><span class="asset-thumb">${type.icon}</span><span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} · ${statusLabel(status)}</small></span></div></td>
+      <td><span class="host-chip" title="${escapeHtml(host)}">${escapeHtml(hostRecord(host).name)}</span></td>
       <td class="schedule-cell"><span>${formatDate(asset.start_date, 'Sin inicio')}</span><small>hasta ${formatDate(asset.end_date, 'sin limite')}</small></td>
       <td>${formatDuration(asset.duration)}</td>
       <td><span class="status-pill ${status}">${statusLabel(status)}</span></td>
@@ -412,6 +422,72 @@ async function loadSession() {
   el.manageHostsBtn.hidden = !canAdmin()
 }
 
+async function loadSettings() {
+  try {
+    const data = await fleetRequest('/api/settings')
+    state.settings = data.settings || state.settings
+    const auth = state.settings.defaultAuth || {}
+    el.useAuth.checked = Boolean(auth.enabled)
+    el.authFields.hidden = !el.useAuth.checked
+    el.username.value = auth.username || ''
+    el.password.value = ''
+    if (auth.apiVersion) el.apiVersion.value = auth.apiVersion
+    renderGlobalAuthStatus()
+  } catch {
+    renderGlobalAuthStatus()
+  }
+}
+
+function renderGlobalAuthStatus() {
+  const auth = state.settings.defaultAuth || {}
+  if (!auth.enabled) {
+    el.globalAuthStatus.textContent = 'Sin credenciales guardadas.'
+    return
+  }
+  el.globalAuthStatus.textContent = auth.hasPassword
+    ? `Guardadas para todas: ${auth.username || 'usuario'}`
+    : `Guardado usuario ${auth.username || 'sin usuario'}, falta contrasena.`
+}
+
+async function saveGlobalAuth() {
+  try {
+    const auth = {
+      enabled: el.useAuth.checked,
+      username: el.username.value.trim(),
+      apiVersion: el.apiVersion.value,
+    }
+    if (el.password.value) auth.password = el.password.value
+    const data = await fleetRequest('/api/settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultAuth: auth }),
+    })
+    state.settings = data.settings || state.settings
+    renderGlobalAuthStatus()
+    toast('Credenciales guardadas', 'Se usaran en las Raspberry sin credenciales propias.')
+    await refreshActiveView(false)
+  } catch (error) {
+    toast('No se pudo guardar', error.message, 'error')
+  }
+}
+
+async function clearGlobalAuth() {
+  try {
+    const data = await fleetRequest('/api/settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultAuth: { enabled: false, clearPassword: true } }),
+    })
+    state.settings = data.settings || state.settings
+    el.useAuth.checked = false
+    el.password.value = ''
+    el.authFields.hidden = true
+    renderGlobalAuthStatus()
+    toast('Credenciales quitadas', 'El panel dejara de usar credenciales globales.')
+    await refreshActiveView(false)
+  } catch (error) {
+    toast('No se pudo quitar', error.message, 'error')
+  }
+}
+
 function renderHostManager() {
   if (!el.hostManageList) return
   if (!state.hosts.length) {
@@ -425,12 +501,14 @@ function renderHostManager() {
       <code>${host}</code>
       <label><span>API</span><select class="host-api-input"><option value="auto">Auto</option><option value="v1.2">v1.2</option><option value="v2">v2</option></select></label>
       <label class="host-auth-check"><span>Auth</span><input class="host-auth-enabled" type="checkbox" ${auth.enabled ? 'checked' : ''}></label>
-      <label><span>Usuario</span><input class="host-auth-user" value="${escapeHtml(auth.username || '')}" placeholder="screenly"></label>
-      <label><span>Contrasena</span><input class="host-auth-password" type="password" placeholder="${auth.hasPassword ? 'Guardada' : 'Sin guardar'}"></label>
+      <label><span>Usuario propio</span><input class="host-auth-user" value="${escapeHtml(auth.username || '')}" placeholder="usa global si se deja vacio"></label>
+      <label><span>Contrasena propia</span><input class="host-auth-password" type="password" placeholder="${auth.hasPassword ? 'Guardada' : 'usa global'}"></label>
       <label class="host-auth-check"><span>Mantenimiento</span><input class="host-maintenance" type="checkbox" ${maintenance ? 'checked' : ''}></label>
       <label class="host-notes"><span>Notas</span><input class="host-notes-input" value="${escapeHtml(notes)}" maxlength="240" placeholder="Ubicacion o incidencia"></label>
-      <button class="row-button" type="button" data-host-action="rename" data-host="${host}" title="Guardar nombre" aria-label="Guardar nombre">&#10003;</button>
-      <button class="row-button danger" type="button" data-host-action="remove" data-host="${host}" title="Eliminar pantalla" aria-label="Eliminar pantalla">&#10005;</button>
+      <div class="host-row-actions">
+        <button class="row-button" type="button" data-host-action="rename" data-host="${host}" title="Guardar pantalla" aria-label="Guardar pantalla">&#10003;</button>
+        <button class="row-button danger" type="button" data-host-action="remove" data-host="${host}" title="Eliminar pantalla" aria-label="Eliminar pantalla">&#10005;</button>
+      </div>
     </div>`).join('')
   state.hosts.forEach(({ host, auth = {} }) => {
     const row = el.hostManageList.querySelector(`[data-host-row="${CSS.escape(host)}"]`)
@@ -1085,6 +1163,8 @@ el.searchInput.addEventListener('input', () => { state.search = el.searchInput.v
 el.screenFilter.addEventListener('change', () => { state.screen = el.screenFilter.value; renderAssets() })
 el.sortSelect.addEventListener('change', () => { state.sort = el.sortSelect.value; renderAssets() })
 el.autoRefreshToggle.addEventListener('change', configureAutoRefresh)
+el.saveGlobalAuthBtn.addEventListener('click', saveGlobalAuth)
+el.clearGlobalAuthBtn.addEventListener('click', clearGlobalAuth)
 el.useAuth.addEventListener('change', () => {
   el.authFields.hidden = !el.useAuth.checked
   if (!el.useAuth.checked) el.password.value = ''
@@ -1191,6 +1271,7 @@ el.logoutBtn.addEventListener('click', async () => {
 async function initialize() {
   try {
     await loadSession()
+    await loadSettings()
     el.autoRefreshToggle.checked = localStorage.getItem('fleetboard-auto-refresh') === '1'
     configureAutoRefresh()
     await loadHosts()
