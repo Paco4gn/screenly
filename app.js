@@ -8,7 +8,10 @@ const state = {
   sort: 'playlist',
   selected: new Set(),
   nowPlaying: [],
+  diagnostics: [],
+  history: [],
   view: 'library',
+  role: 'admin',
   loading: false,
 }
 
@@ -22,13 +25,15 @@ const el = Object.fromEntries([
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
   'libraryView', 'monitorView', 'monitorGrid', 'screensView', 'onlineCount', 'activeCount', 'scheduledCount',
+  'opsView', 'runDiagnosticsBtn', 'diagnosticsList', 'alertsList', 'historyList',
   'offlineCount', 'allBadge', 'activeBadge', 'scheduledBadge', 'inactiveBadge', 'searchInput',
   'screenFilter', 'sortSelect', 'autoRefreshToggle', 'bulkBar', 'selectedCount', 'bulkEnableBtn', 'bulkDisableBtn',
-  'bulkDeleteBtn', 'selectVisible', 'assetsBody', 'statusGrid', 'assetDialog',
+  'bulkScheduleBtn', 'bulkDeleteBtn', 'selectVisible', 'assetsBody', 'statusGrid', 'assetDialog',
   'assetForm', 'assetFile', 'assetUrl', 'fileName', 'fileSource', 'urlSource',
-  'assetName', 'startDate', 'endDate', 'duration', 'enabled', 'targetSummary', 'uploadStatus',
+  'assetName', 'startDate', 'endDate', 'duration', 'enabled', 'avoidDuplicates', 'targetSummary', 'uploadStatus',
   'submitAssetBtn', 'editDialog', 'editForm', 'editHost', 'editAssetId',
   'editHostLabel', 'editName', 'editStartDate', 'editEndDate', 'editDuration',
+  'scheduleDialog', 'scheduleForm', 'bulkStartDate', 'bulkEndDate', 'bulkDuration', 'bulkEnabled', 'scheduleSummary',
   'editEnabled', 'confirmDialog', 'confirmTitle', 'confirmText', 'confirmAccept',
   'toastRegion', 'logoutBtn',
 ].map((id) => [id, document.getElementById(id)]))
@@ -52,6 +57,14 @@ function authPayload() {
     password: el.password.value,
     apiVersion: el.apiVersion.value,
   }
+}
+
+function canOperate() {
+  return ['admin', 'operator'].includes(state.role)
+}
+
+function canAdmin() {
+  return state.role === 'admin'
 }
 
 function assetId(asset) {
@@ -113,8 +126,9 @@ function renderHosts() {
   el.hostList.innerHTML = state.hosts.map(({ host, name }) => {
     const result = resultMap.get(host)
     const suffix = host.split('.').pop()
-    const status = result ? (result.ok ? 'ok' : result.authRequired ? 'warn' : 'bad') : ''
-    const detail = result ? (result.ok ? `${(result.assets || []).length} contenidos` : result.authRequired ? 'Requiere clave' : 'Sin conexion') : 'Pendiente'
+    const maintenance = Boolean(hostRecord(host).maintenance)
+    const status = maintenance ? 'maintenance' : result ? (result.ok ? 'ok' : result.authRequired ? 'warn' : 'bad') : ''
+    const detail = maintenance ? 'Mantenimiento' : result ? (result.ok ? `${(result.assets || []).length} contenidos` : diagnosticLabel(result)) : 'Pendiente'
     return `<div class="host-item">
       <input class="host-check" type="checkbox" value="${host}" ${chosenHosts.has(host) ? 'checked' : ''} aria-label="Seleccionar ${escapeHtml(name)}">
       <button class="host-main" type="button" data-solo="${host}" title="Administrar solo esta pantalla"><span><strong>${escapeHtml(name)}</strong><small>${host} - ${detail}</small></span></button>
@@ -188,10 +202,10 @@ function renderAssets() {
       <td><span class="status-pill ${status}">${statusLabel(status)}</span></td>
       <td class="actions-column"><div class="row-actions">
         ${canOrder ? `<span class="order-controls"><button class="row-button" type="button" data-action="move-up" data-key="${escapeHtml(key)}" title="Subir en la playlist" aria-label="Subir en la playlist">&#8593;</button><button class="row-button" type="button" data-action="move-down" data-key="${escapeHtml(key)}" title="Bajar en la playlist" aria-label="Bajar en la playlist">&#8595;</button></span>` : ''}
-        <button class="row-button" type="button" data-action="toggle" data-host="${host}" data-id="${escapeHtml(id)}" title="${isEnabled(asset) ? 'Desactivar' : 'Activar'}" aria-label="${isEnabled(asset) ? 'Desactivar' : 'Activar'}">${isEnabled(asset) ? '&#10074;&#10074;' : '&#9654;'}</button>
-        <button class="row-button" type="button" data-action="edit" data-key="${escapeHtml(key)}" title="Editar" aria-label="Editar">&#9998;</button>
+        ${canOperate() ? `<button class="row-button" type="button" data-action="toggle" data-host="${host}" data-id="${escapeHtml(id)}" title="${isEnabled(asset) ? 'Desactivar' : 'Activar'}" aria-label="${isEnabled(asset) ? 'Desactivar' : 'Activar'}">${isEnabled(asset) ? '&#10074;&#10074;' : '&#9654;'}</button>` : ''}
+        ${canOperate() ? `<button class="row-button" type="button" data-action="edit" data-key="${escapeHtml(key)}" title="Editar" aria-label="Editar">&#9998;</button>` : ''}
         <button class="row-button" type="button" data-action="download" data-key="${escapeHtml(key)}" title="Descargar" aria-label="Descargar">&#8681;</button>
-        <button class="row-button danger" type="button" data-action="delete" data-host="${host}" data-id="${escapeHtml(id)}" title="Eliminar" aria-label="Eliminar">&#10005;</button>
+        ${canAdmin() ? `<button class="row-button danger" type="button" data-action="delete" data-host="${host}" data-id="${escapeHtml(id)}" title="Eliminar" aria-label="Eliminar">&#10005;</button>` : ''}
       </div></td>
     </tr>`
   }).join('')
@@ -209,15 +223,51 @@ function renderScreens() {
     const assets = result.assets || []
     const record = hostRecord(result.host)
     const active = assets.filter((asset) => assetStatus(asset) === 'active').length
-    const connectionLabel = result.ok ? 'En linea' : result.authRequired ? 'Protegida' : 'Sin conexion'
-    const connectionClass = result.ok ? 'active' : result.authRequired ? 'scheduled' : 'inactive'
+    const maintenance = Boolean(record.maintenance)
+    const connectionLabel = maintenance ? 'Mantenimiento' : result.ok ? 'En linea' : result.authRequired ? 'API protegida' : 'Sin conexion'
+    const connectionClass = maintenance ? 'maintenance' : result.ok ? 'active' : result.authRequired ? 'scheduled' : 'inactive'
     return `<article class="screen-card">
       <div class="screen-card-head"><div><h3>${escapeHtml(record.name)}</h3><p>${result.host}</p></div><span class="status-pill ${connectionClass}">${connectionLabel}</span></div>
-      <div class="screen-card-stats"><div><strong>${result.ok ? `API ${result.version}` : '-'}</strong><small>Version detectada</small></div><div><strong>${result.ok ? active : '-'}</strong><small>En emision</small></div><div><strong>${result.ok ? assets.length : '-'}</strong><small>Totales</small></div><div><strong>${result.ok ? 'Disponible' : result.authRequired ? 'Introducir clave' : 'Revisar red'}</strong><small>Estado</small></div></div>
+      <div class="screen-card-stats"><div><strong>${result.ok ? `API ${result.version}` : '-'}</strong><small>Version detectada</small></div><div><strong>${result.ok ? active : '-'}</strong><small>En emision</small></div><div><strong>${result.ok ? assets.length : '-'}</strong><small>Totales</small></div><div><strong>${maintenance ? 'Pausada' : result.ok ? 'Disponible' : result.authRequired ? 'Credenciales' : 'Revisar red'}</strong><small>Estado</small></div></div>
       ${result.ok ? '' : `<p class="screen-error" title="${escapeHtml(result.error || '')}">${escapeHtml(result.error || 'No se ha podido consultar esta pantalla.')}</p>`}
       <button class="manage-screen secondary-button" type="button" data-manage-host="${result.host}">Administrar esta pantalla</button>
     </article>`
   }).join('')
+}
+
+function renderOps() {
+  const diagnostics = state.diagnostics
+  if (!diagnostics.length) {
+    el.diagnosticsList.innerHTML = '<div class="empty-state"><strong>Sin diagnostico reciente</strong><span>Ejecuta una revision para ver API, red y agente.</span></div>'
+    el.alertsList.innerHTML = '<div class="empty-state"><strong>Sin alertas cargadas</strong><span>Las incidencias apareceran aqui.</span></div>'
+  } else {
+    el.diagnosticsList.innerHTML = diagnostics.map((item) => {
+      const record = hostRecord(item.host)
+      const cls = item.severity === 'ok' ? 'active' : item.severity === 'maintenance' ? 'maintenance' : item.severity === 'warning' ? 'scheduled' : 'inactive'
+      const monitor = item.monitor?.connected ? 'Agente conectado' : monitorHint(item.monitor)
+      return `<article class="diagnostic-row ${cls}">
+        <div><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(item.host)} - ${escapeHtml(item.message || item.error || '')}</small></div>
+        <span class="status-pill ${cls}">${diagnosticStatus(item)}</span>
+        <small>${escapeHtml(monitor)}</small>
+        <button class="secondary-button compact" type="button" data-agent-host="${item.host}">Agente</button>
+        <button class="secondary-button compact" type="button" data-manage-host="${item.host}">Administrar</button>
+      </article>`
+    }).join('')
+    const alerts = diagnostics.filter((item) => !item.ok || item.severity === 'maintenance')
+    el.alertsList.innerHTML = alerts.length ? alerts.map((item) => {
+      const record = hostRecord(item.host)
+      return `<article class="alert-row ${item.severity === 'error' ? 'danger' : 'warn'}">
+        <strong>${escapeHtml(record.name)}</strong>
+        <span>${escapeHtml(item.message || item.error || 'Revisar pantalla')}</span>
+      </article>`
+    }).join('') : '<div class="empty-state"><strong>Sin alertas</strong><span>Las pantallas seleccionadas estan sin incidencias criticas.</span></div>'
+  }
+  el.historyList.innerHTML = state.history.length ? state.history.map((event) => `
+    <article class="history-row">
+      <time>${formatDate(event.time, '')}</time>
+      <strong>${escapeHtml(event.message || event.kind)}</strong>
+      <small>${escapeHtml(event.host || 'Panel')}</small>
+    </article>`).join('') : '<div class="empty-state"><strong>Sin historial</strong><span>Las acciones importantes se registraran aqui.</span></div>'
 }
 
 function renderMonitor() {
@@ -314,6 +364,10 @@ function monitorShell(record, host, content, status, statusClass = 'scheduled') 
 function updateBulkBar() {
   el.selectedCount.textContent = state.selected.size
   el.bulkBar.hidden = state.selected.size === 0
+  el.bulkEnableBtn.hidden = !canOperate()
+  el.bulkDisableBtn.hidden = !canOperate()
+  el.bulkScheduleBtn.hidden = !canOperate()
+  el.bulkDeleteBtn.hidden = !canAdmin()
 }
 
 async function readJsonResponse(response, fallback) {
@@ -347,20 +401,42 @@ async function loadHosts() {
   updatePageContext()
 }
 
+async function loadSession() {
+  try {
+    const data = await fleetRequest('/api/session')
+    state.role = data.role || 'admin'
+  } catch {
+    state.role = 'admin'
+  }
+  el.addAssetBtn.hidden = !canOperate() || state.view !== 'library'
+  el.manageHostsBtn.hidden = !canAdmin()
+}
+
 function renderHostManager() {
   if (!el.hostManageList) return
   if (!state.hosts.length) {
     el.hostManageList.innerHTML = '<div class="empty-manage"><strong>No hay pantallas</strong><span>Anade la primera Raspberry con el formulario inferior.</span></div>'
     return
   }
-  el.hostManageList.innerHTML = state.hosts.map(({ host, name }) => `
+  el.hostManageList.innerHTML = state.hosts.map(({ host, name, auth = {}, maintenance = false, notes = '' }) => `
     <div class="host-manage-row" data-host-row="${host}">
       <span class="host-manage-dot"></span>
       <label><span>Nombre</span><input class="host-name-input" value="${escapeHtml(name)}" maxlength="60"></label>
       <code>${host}</code>
+      <label><span>API</span><select class="host-api-input"><option value="auto">Auto</option><option value="v1.2">v1.2</option><option value="v2">v2</option></select></label>
+      <label class="host-auth-check"><span>Auth</span><input class="host-auth-enabled" type="checkbox" ${auth.enabled ? 'checked' : ''}></label>
+      <label><span>Usuario</span><input class="host-auth-user" value="${escapeHtml(auth.username || '')}" placeholder="screenly"></label>
+      <label><span>Contrasena</span><input class="host-auth-password" type="password" placeholder="${auth.hasPassword ? 'Guardada' : 'Sin guardar'}"></label>
+      <label class="host-auth-check"><span>Mantenimiento</span><input class="host-maintenance" type="checkbox" ${maintenance ? 'checked' : ''}></label>
+      <label class="host-notes"><span>Notas</span><input class="host-notes-input" value="${escapeHtml(notes)}" maxlength="240" placeholder="Ubicacion o incidencia"></label>
       <button class="row-button" type="button" data-host-action="rename" data-host="${host}" title="Guardar nombre" aria-label="Guardar nombre">&#10003;</button>
       <button class="row-button danger" type="button" data-host-action="remove" data-host="${host}" title="Eliminar pantalla" aria-label="Eliminar pantalla">&#10005;</button>
     </div>`).join('')
+  state.hosts.forEach(({ host, auth = {} }) => {
+    const row = el.hostManageList.querySelector(`[data-host-row="${CSS.escape(host)}"]`)
+    const select = row?.querySelector('.host-api-input')
+    if (select) select.value = auth.apiVersion || 'auto'
+  })
 }
 
 async function addFleetHost(event) {
@@ -384,14 +460,26 @@ async function addFleetHost(event) {
 async function renameFleetHost(host, row) {
   const input = row.querySelector('.host-name-input')
   try {
+    const password = row.querySelector('.host-auth-password').value
+    const auth = {
+      enabled: row.querySelector('.host-auth-enabled').checked,
+      username: row.querySelector('.host-auth-user').value.trim(),
+      apiVersion: row.querySelector('.host-api-input').value,
+    }
+    if (password) auth.password = password
     const data = await fleetRequest(`/api/hosts/${encodeURIComponent(host)}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: input.value.trim() }),
+      body: JSON.stringify({
+        name: input.value.trim(),
+        maintenance: row.querySelector('.host-maintenance').checked,
+        notes: row.querySelector('.host-notes-input').value.trim(),
+        auth,
+      }),
     })
     await loadHosts()
-    toast('Nombre actualizado', data.host.name)
+    toast('Pantalla actualizada', data.host.name)
   } catch (error) {
-    toast('No se pudo renombrar', error.message, 'error')
+    toast('No se pudo guardar', error.message, 'error')
   }
 }
 
@@ -473,7 +561,9 @@ function configureMonitorTimer() {
 }
 
 function refreshActiveView(showToast = true) {
-  return state.view === 'monitor' ? refreshNowPlaying(showToast) : refreshFleet(showToast)
+  if (state.view === 'monitor') return refreshNowPlaying(showToast)
+  if (state.view === 'ops') return refreshDiagnostics(showToast)
+  return refreshFleet(showToast)
 }
 
 function scheduleSelectionRefresh() {
@@ -519,14 +609,15 @@ async function submitAsset(event) {
       form.set('password', auth.password)
       form.set('enabled', el.enabled.checked ? '1' : '0')
       form.set('skipAssetCheck', '1')
-      const response = await fetch('/api/upload', { method: 'POST', body: form })
-      payload = await readJsonResponse(response, 'Error durante la subida')
+      form.set('duplicatePolicy', el.avoidDuplicates.checked ? 'skip' : 'allow')
+      payload = await uploadWithProgress(form, hosts.length)
     } else {
       if (!el.assetUrl.value.trim()) throw new Error('Indica una direccion web valida.')
       payload = await postJson('url', {
         hosts, url: el.assetUrl.value.trim(), name: el.assetName.value.trim(),
         startDate: el.startDate.value, endDate: el.endDate.value,
         duration: Number(el.duration.value || 0), enabled: el.enabled.checked,
+        duplicatePolicy: el.avoidDuplicates.checked ? 'skip' : 'allow',
         ...authPayload(),
       })
     }
@@ -540,6 +631,7 @@ async function submitAsset(event) {
     el.assetForm.reset()
     el.endDate.value = '9999-01-01T00:00'
     el.enabled.checked = true
+    el.avoidDuplicates.checked = true
     await refreshFleet(false)
   } catch (error) {
     toast('No se pudo anadir', error.message, 'error')
@@ -549,6 +641,26 @@ async function submitAsset(event) {
     el.submitAssetBtn.textContent = 'Anadir contenido'
     el.assetForm.removeAttribute('aria-busy')
   }
+}
+
+function uploadWithProgress(form, hostCount) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/upload')
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable) return
+      const percent = Math.round((event.loaded / event.total) * 100)
+      el.uploadStatus.textContent = `Subiendo al servidor ${percent}%. Despues se enviara a ${hostCount} pantalla${hostCount === 1 ? '' : 's'}.`
+    })
+    xhr.addEventListener('load', () => {
+      let payload = {}
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : {} } catch { payload = {} }
+      if (xhr.status < 200 || xhr.status >= 300) reject(new Error(payload.error || 'Error durante la subida'))
+      else resolve(payload)
+    })
+    xhr.addEventListener('error', () => reject(new Error('No se pudo comunicar con el servidor durante la subida')))
+    xhr.send(form)
+  })
 }
 
 async function runTargets(operation, targets, extra = {}) {
@@ -578,7 +690,7 @@ function resultSummary(payload, expected) {
 }
 
 function setBulkBusy(busy) {
-  ;[el.bulkEnableBtn, el.bulkDisableBtn, el.bulkDeleteBtn].forEach((button) => { button.disabled = busy })
+  ;[el.bulkEnableBtn, el.bulkDisableBtn, el.bulkScheduleBtn, el.bulkDeleteBtn].forEach((button) => { button.disabled = busy })
 }
 
 function targetFrom(host, id) {
@@ -621,6 +733,28 @@ async function submitEdit(event) {
   }
   el.editDialog.close()
   await runTargets('update', targetFrom(el.editHost.value, el.editAssetId.value), { update })
+}
+
+function openBulkSchedule() {
+  const targets = selectedTargets()
+  if (!targets.length) return
+  el.scheduleSummary.textContent = `${targets.length} contenidos seleccionados`
+  el.bulkEndDate.value = '9999-01-01T00:00'
+  el.bulkEnabled.checked = true
+  el.scheduleDialog.showModal()
+}
+
+async function submitBulkSchedule(event) {
+  event.preventDefault()
+  if (!validSchedule(el.bulkStartDate.value, el.bulkEndDate.value)) return toast('Programacion no valida', 'La fecha de fin debe ser posterior a la fecha de inicio.', 'error')
+  const update = {
+    start_date: el.bulkStartDate.value,
+    end_date: el.bulkEndDate.value,
+    duration: Number(el.bulkDuration.value || 0),
+    is_enabled: el.bulkEnabled.checked,
+  }
+  el.scheduleDialog.close()
+  await runTargets('update', selectedTargets(), { update })
 }
 
 async function downloadContent(key) {
@@ -750,17 +884,46 @@ function switchView(view) {
   el.libraryView.classList.toggle('active', view === 'library')
   el.monitorView.classList.toggle('active', view === 'monitor')
   el.screensView.classList.toggle('active', view === 'screens')
-  el.pageTitle.textContent = view === 'library' ? 'Biblioteca de contenidos' : view === 'monitor' ? 'En pantalla ahora' : 'Estado de pantallas'
-  el.pageSubtitle.textContent = view === 'library' ? `Gestion conjunta de ${selectedHosts().length} pantallas` : view === 'monitor' ? 'Supervision en directo de los reproductores seleccionados' : 'Supervision de la flota local'
+  el.opsView.classList.toggle('active', view === 'ops')
+  el.pageTitle.textContent = view === 'library' ? 'Biblioteca de contenidos' : view === 'monitor' ? 'En pantalla ahora' : view === 'screens' ? 'Estado de pantallas' : 'Centro operativo'
+  el.pageSubtitle.textContent = view === 'library' ? `Gestion conjunta de ${selectedHosts().length} pantallas` : view === 'monitor' ? 'Supervision en directo de los reproductores seleccionados' : view === 'screens' ? 'Supervision de la flota local' : 'Diagnostico, alertas e historial'
   if (view === 'library') updatePageContext()
   else el.playbackControls.hidden = true
-  el.addAssetBtn.hidden = view !== 'library'
+  el.addAssetBtn.hidden = view !== 'library' || !canOperate()
   if (view === 'monitor') {
     renderMonitor()
     refreshNowPlaying(false)
   }
+  if (view === 'ops') refreshDiagnostics(false)
   configureMonitorTimer()
   closeSidebar()
+}
+
+async function refreshDiagnostics(showToast = true) {
+  const hosts = selectedHosts()
+  if (!hosts.length) {
+    state.diagnostics = []
+    renderOps()
+    return
+  }
+  try {
+    const data = await postJson('diagnostics', { hosts, ...authPayload() })
+    state.diagnostics = data.results || []
+    await loadHistory()
+    renderOps()
+    if (showToast) toast('Diagnostico terminado', `${state.diagnostics.length} pantallas revisadas.`)
+  } catch (error) {
+    toast('No se pudo diagnosticar', error.message, 'error')
+  }
+}
+
+async function loadHistory() {
+  try {
+    const data = await fleetRequest('/api/history')
+    state.history = data.events || []
+  } catch {
+    state.history = []
+  }
 }
 
 function toggleSidebar() {
@@ -804,6 +967,30 @@ function toast(title, message, type = 'success') {
   el.toastRegion.append(node)
   while (el.toastRegion.children.length > 4) el.toastRegion.firstElementChild.remove()
   setTimeout(() => node.remove(), 4500)
+}
+
+function diagnosticLabel(result) {
+  if (result.authRequired) return 'API protegida'
+  if (Number(result.status) === 0) return 'Sin red'
+  return result.error || 'Error API'
+}
+
+function diagnosticStatus(item) {
+  if (item.maintenance) return 'Mantenimiento'
+  if (item.ok) return 'Correcta'
+  if (item.status === 'api_protegida') return 'API protegida'
+  if (item.status === 'sin_red') return 'Sin red'
+  return 'Revisar'
+}
+
+async function copyAgentCommand(host) {
+  const command = `INSTALAR_AGENTE.bat`
+  try {
+    await navigator.clipboard.writeText(command)
+    toast('Comando copiado', `Ejecuta ${command} y escribe la IP ${host} para actualizar el agente.`)
+  } catch {
+    toast('Actualizar agente', `Ejecuta INSTALAR_AGENTE.bat y escribe la IP ${host}.`)
+  }
 }
 
 function assetType(asset) {
@@ -891,6 +1078,7 @@ el.nextAssetBtn.addEventListener('click', () => controlPlayback('next'))
 el.addAssetBtn.addEventListener('click', openAssetDialog)
 el.assetForm.addEventListener('submit', submitAsset)
 el.editForm.addEventListener('submit', submitEdit)
+el.scheduleForm.addEventListener('submit', submitBulkSchedule)
 el.mobileMenuBtn.addEventListener('click', toggleSidebar)
 el.sidebarBackdrop.addEventListener('click', closeSidebar)
 el.searchInput.addEventListener('input', () => { state.search = el.searchInput.value; renderAssets() })
@@ -966,11 +1154,19 @@ el.assetsBody.addEventListener('click', async (event) => {
 })
 el.bulkEnableBtn.addEventListener('click', () => runTargets('enable', selectedTargets()))
 el.bulkDisableBtn.addEventListener('click', () => runTargets('disable', selectedTargets()))
+el.bulkScheduleBtn.addEventListener('click', openBulkSchedule)
 el.bulkDeleteBtn.addEventListener('click', async () => {
   const targets = selectedTargets()
   if (await confirmAction('Eliminar contenidos', `Se eliminaran ${targets.length} contenidos de sus pantallas.`)) runTargets('delete', targets)
 })
 el.statusGrid.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-manage-host]')
+  if (button) manageOnly(button.dataset.manageHost)
+})
+el.runDiagnosticsBtn.addEventListener('click', () => refreshDiagnostics(true))
+el.diagnosticsList.addEventListener('click', (event) => {
+  const agentButton = event.target.closest('[data-agent-host]')
+  if (agentButton) return copyAgentCommand(agentButton.dataset.agentHost)
   const button = event.target.closest('[data-manage-host]')
   if (button) manageOnly(button.dataset.manageHost)
 })
@@ -994,11 +1190,13 @@ el.logoutBtn.addEventListener('click', async () => {
 
 async function initialize() {
   try {
+    await loadSession()
     el.autoRefreshToggle.checked = localStorage.getItem('fleetboard-auto-refresh') === '1'
     configureAutoRefresh()
     await loadHosts()
     if (state.hosts.length) await refreshFleet(false)
-    else render()
+    await loadHistory()
+    if (!state.hosts.length) render()
   } catch (error) {
     toast('No se pudo iniciar', error.message, 'error')
   }

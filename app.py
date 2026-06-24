@@ -23,22 +23,28 @@ if VENDOR_DIR.exists():
 
 from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory, session, stream_with_context
 import requests
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import Forbidden, HTTPException
 from werkzeug.security import check_password_hash
 
 CONFIG_PATH = BASE_DIR / "fleet.json"
 MONITOR_CONFIG_PATH = BASE_DIR / "monitor.json"
+HISTORY_PATH = BASE_DIR / "history.jsonl"
 CONFIG_LOCK = Lock()
+HISTORY_LOCK = Lock()
 CURRENT_ASSET_LOCK = Lock()
 CURRENT_ASSET_CACHE = {}
 MAX_FLEET_WORKERS = 6
 MAX_UPLOAD_WORKERS = 3
 MAX_ASSET_NAME_LENGTH = 160
+MAX_HISTORY_ITEMS = 250
 APP_EMAIL = os.environ.get("CENTRO_MANDO_EMAIL", "informatica@feval.com").strip().lower()
 APP_PASSWORD_HASH = os.environ.get(
     "CENTRO_MANDO_PASSWORD_HASH",
     "scrypt:32768:8:1$jf3kDGJdwS29aU2m$523ff11db401535be0ac178470be644ed5d99a30c5fba71478e37ed41e1aa21efdd180f1329fc1dee3977017b5080784fae37b912c971b50ea0216627c7d01c4",
 )
+APP_ROLE = os.environ.get("CENTRO_MANDO_ROLE", "admin").strip().lower()
+if APP_ROLE not in {"admin", "operator", "viewer"}:
+    APP_ROLE = "admin"
 LOGIN_ATTEMPTS = {}
 LOGIN_LOCK = Lock()
 LOGIN_MAX_ATTEMPTS = 5
@@ -92,6 +98,12 @@ def register_failed_login(client):
             attempt["blocked_until"] = now + LOGIN_BLOCK_SECONDS
             return True
     return False
+
+
+def require_role(required):
+    levels = {"viewer": 1, "operator": 2, "admin": 3}
+    if levels[APP_ROLE] < levels[required]:
+        raise Forbidden("Tu usuario no tiene permisos para esta accion")
 
 
 app = Flask(__name__, static_folder=None)
@@ -164,6 +176,11 @@ def logout_api():
     return jsonify(ok=True)
 
 
+@app.get("/api/session")
+def session_api():
+    return jsonify(email=session.get("authenticated_email"), role=APP_ROLE)
+
+
 @app.get("/")
 def index():
     return send_from_directory(BASE_DIR, "index.html")
@@ -178,7 +195,12 @@ def static_file(filename):
 
 @app.get("/api/hosts")
 def get_hosts():
-    return jsonify(hosts=load_fleet())
+    return jsonify(hosts=[public_host(item) for item in load_fleet()])
+
+
+@app.get("/api/history")
+def get_history():
+    return jsonify(events=load_history())
 
 
 @app.get("/api/health")
@@ -188,35 +210,47 @@ def health():
 
 @app.post("/api/hosts")
 def add_host():
+    require_role("admin")
     data = request.get_json(silent=True) or {}
     host = validate_private_host(data.get("host"))
-    name = clean_host_name(data.get("name"), host)
+    item = clean_host_config(data, host)
+    item["name"] = clean_host_name(data.get("name"), host)
     with CONFIG_LOCK:
         fleet = load_fleet()
         if any(item["host"] == host for item in fleet):
             return jsonify(error="Esa Raspberry ya esta en la flota"), 409
-        fleet.append({"host": host, "name": name})
+        fleet.append(item)
         save_fleet(fleet)
-    return jsonify(host={"host": host, "name": name}), 201
+    append_history("host_added", host, f"Raspberry anadida: {item['name']}")
+    return jsonify(host=public_host(item)), 201
 
 
 @app.patch("/api/hosts/<host>")
-def rename_host(host):
+def update_host(host):
+    require_role("admin")
     host = validate_private_host(host)
     data = request.get_json(silent=True) or {}
-    name = clean_host_name(data.get("name"), host)
     with CONFIG_LOCK:
         fleet = load_fleet()
         item = next((item for item in fleet if item["host"] == host), None)
         if item is None:
             return jsonify(error="La Raspberry no existe en la flota"), 404
-        item["name"] = name
+        if "name" in data:
+            item["name"] = clean_host_name(data.get("name"), host)
+        if "auth" in data and isinstance(data.get("auth"), dict):
+            item["auth"] = clean_auth_config(data["auth"], item.get("auth"))
+        if "maintenance" in data:
+            item["maintenance"] = bool(data.get("maintenance"))
+        if "notes" in data:
+            item["notes"] = clean_notes(data.get("notes"))
         save_fleet(fleet)
-    return jsonify(host=item)
+    append_history("host_updated", host, f"Configuracion actualizada: {item['name']}")
+    return jsonify(host=public_host(item))
 
 
 @app.delete("/api/hosts/<host>")
 def remove_host(host):
+    require_role("admin")
     host = validate_private_host(host)
     with CONFIG_LOCK:
         fleet = load_fleet()
@@ -224,6 +258,7 @@ def remove_host(host):
         if len(updated) == len(fleet):
             return jsonify(error="La Raspberry no existe en la flota"), 404
         save_fleet(updated)
+    append_history("host_removed", host, "Raspberry eliminada del panel")
     return jsonify(ok=True, host=host)
 
 
@@ -231,18 +266,28 @@ def remove_host(host):
 def list_fleet():
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
-    auth = auth_from(data)
     preferred = data.get("apiVersion", "auto")
-    results = parallel_map(hosts, lambda host: list_host(host, auth, preferred))
+    results = parallel_map(
+        hosts,
+        lambda host: list_host(host, auth_for_host(host, data), api_preference_for_host(host, preferred)),
+    )
     return jsonify(results=results)
+
+
+@app.post("/api/diagnostics")
+def diagnostics_fleet():
+    data = request.get_json(silent=True) or {}
+    hosts = clean_hosts(data.get("hosts"))
+    preferred = data.get("apiVersion", "auto")
+    results = parallel_map(hosts, lambda host: diagnose_host(host, auth_for_host(host, data), preferred))
+    return jsonify(results=results, checkedAt=datetime.now(timezone.utc).isoformat())
 
 
 @app.post("/api/now")
 def now_playing_fleet():
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
-    auth = auth_from(data)
-    results = parallel_map(hosts, lambda host: current_asset(host, auth))
+    results = parallel_map(hosts, lambda host: current_asset(host, auth_for_host(host, data)))
     return jsonify(results=results, checkedAt=datetime.now(timezone.utc).isoformat())
 
 
@@ -328,12 +373,13 @@ def live_media(host, asset_id):
 
 @app.post("/api/upload")
 def upload_fleet():
+    require_role("operator")
     video = request.files.get("video")
     if video is None or not video.filename:
         return jsonify(error="Selecciona un video o una imagen"), 400
 
     hosts = clean_hosts(request.form.get("hosts"))
-    auth = auth_from(request.form)
+    form_data = request.form.to_dict(flat=True)
     preferred = request.form.get("apiVersion", "auto")
     filename = Path(video.filename).name
     name = clean_asset_name(request.form.get("name"), Path(filename).stem)
@@ -344,6 +390,7 @@ def upload_fleet():
     duration = max(0, int(request.form.get("duration", 0)))
     enabled = request.form.get("enabled", "1") == "1"
     skip_check = request.form.get("skipAssetCheck", "1") == "1"
+    duplicate_policy = request.form.get("duplicatePolicy", "skip")
     mimetype = video.mimetype or "application/octet-stream"
     suffix = Path(filename).suffix[:12]
     temporary_path = None
@@ -355,7 +402,8 @@ def upload_fleet():
             raise ValueError("El archivo seleccionado esta vacio")
         worker = lambda host: upload_to_host(
             host, temporary_path, filename, mimetype, name, start_date, end_date,
-            duration, enabled, skip_check, auth, preferred,
+            duration, enabled, skip_check, duplicate_policy,
+            auth_for_host(host, form_data), api_preference_for_host(host, preferred),
         )
         results = parallel_map(hosts, worker, MAX_UPLOAD_WORKERS)
     finally:
@@ -369,9 +417,9 @@ def upload_fleet():
 
 @app.post("/api/url")
 def create_url_asset():
+    require_role("operator")
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
-    auth = auth_from(data)
     preferred = data.get("apiVersion", "auto")
     uri = str(data.get("url", "")).strip()
     parsed_uri = urlsplit(uri)
@@ -394,9 +442,17 @@ def create_url_asset():
         "skip_asset_check": True,
     }
     def create_on_host(host):
-        detected = detect_api(host, auth, preferred)
+        auth = auth_for_host(host, data)
+        detected = detect_api(host, auth, api_preference_for_host(host, preferred))
         if not detected["ok"]:
             return {"host": host, "ok": False, "error": detected["error"]}
+        duplicate = find_duplicate_asset(detected.get("assets", []), name, uri)
+        if duplicate and duplicate_policy == "skip":
+            return {
+                "host": host, "ok": True, "version": detected["version"],
+                "duplicate": True, "asset": duplicate,
+                "message": "Ya existia un contenido equivalente",
+            }
         version = detected["version"]
         payload = dict(payload_base)
         if version == "v2":
@@ -420,8 +476,8 @@ def create_url_asset():
 @app.post("/api/asset")
 def asset_action():
     data = request.get_json(silent=True) or {}
-    auth = auth_from(data)
     operation = data.get("operation", "")
+    require_role("admin" if operation == "delete" else "operator")
     preferred = data.get("apiVersion", "auto")
     targets = clean_targets(data)
     if operation not in {"enable", "disable", "delete", "update"}:
@@ -431,7 +487,8 @@ def asset_action():
     def apply_to_target(target):
         host = target["host"]
         asset_id = target["assetId"]
-        detected = detect_api(host, auth, preferred)
+        auth = auth_for_host(host, data)
+        detected = detect_api(host, auth, api_preference_for_host(host, preferred))
         if not detected["ok"]:
             return {"host": host, "assetId": asset_id, "ok": False, "error": detected["error"]}
         version = detected["version"]
@@ -464,6 +521,7 @@ def asset_action():
             "error": None if response["ok"] else response["error"],
         }
     results = parallel_targets(targets, apply_to_target)
+    append_history(f"asset_{operation}", None, f"{len(targets)} contenidos solicitados")
     return jsonify(results=results)
 
 
@@ -474,7 +532,7 @@ def download_asset():
     if len(targets) != 1:
         return jsonify(error="Selecciona un unico contenido para descargar"), 400
     target = targets[0]
-    auth = auth_from(data)
+    auth = auth_for_host(target["host"], data)
     path = f"/api/v1/assets/{quote(target['assetId'], safe='')}/content"
     response = screenly_request("GET", target["host"], path, auth, timeout=600)
     if not response["ok"]:
@@ -503,6 +561,7 @@ def download_asset():
 
 @app.post("/api/control")
 def control_playback():
+    require_role("operator")
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
     if len(hosts) != 1:
@@ -510,8 +569,8 @@ def control_playback():
     direction = str(data.get("direction", ""))
     if direction not in {"previous", "next"}:
         return jsonify(error="Control de reproduccion no valido"), 400
-    auth = auth_from(data)
-    detected = detect_api(hosts[0], auth, data.get("apiVersion", "auto"))
+    auth = auth_for_host(hosts[0], data)
+    detected = detect_api(hosts[0], auth, api_preference_for_host(hosts[0], data.get("apiVersion", "auto")))
     if not detected["ok"]:
         return jsonify(error=detected["error"]), detected.get("status") or 502
     version = detected["version"]
@@ -524,6 +583,7 @@ def control_playback():
 
 @app.post("/api/order")
 def update_playlist_order():
+    require_role("operator")
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
     if len(hosts) != 1:
@@ -535,8 +595,8 @@ def update_playlist_order():
     if any(not asset_id for asset_id in ordered_ids) or len(set(ordered_ids)) != len(ordered_ids):
         return jsonify(error="La lista de contenidos contiene IDs no validos"), 400
 
-    auth = auth_from(data)
-    detected = detect_api(hosts[0], auth, data.get("apiVersion", "auto"))
+    auth = auth_for_host(hosts[0], data)
+    detected = detect_api(hosts[0], auth, api_preference_for_host(hosts[0], data.get("apiVersion", "auto")))
     if not detected["ok"]:
         return jsonify(error=detected["error"]), detected.get("status") or 502
     known_ids = {
@@ -596,13 +656,23 @@ def parallel_targets(targets, worker):
 
 def upload_to_host(
     host, temporary_path, filename, mimetype, name, start_date, end_date,
-    duration, enabled, skip_check, auth, preferred,
+    duration, enabled, skip_check, duplicate_policy, auth, preferred,
 ):
     detected = detect_api(host, auth, preferred)
     if not detected["ok"]:
         return {"host": host, "ok": False, "error": detected["error"]}
 
     version = detected["version"]
+    duplicate = find_duplicate_asset(detected.get("assets", []), name, filename)
+    if duplicate and duplicate_policy == "skip":
+        return {
+            "host": host,
+            "ok": True,
+            "version": version,
+            "duplicate": True,
+            "asset": duplicate,
+            "message": "Ya existia un contenido equivalente",
+        }
     upload_path = "/api/v2/file_asset" if version == "v2" else "/api/v1/file_asset"
     with open(temporary_path, "rb") as content:
         uploaded = screenly_request(
@@ -641,6 +711,8 @@ def upload_to_host(
         })
     asset_path = "/api/v2/assets" if version == "v2" else "/api/v1.2/assets"
     created = screenly_request("POST", host, asset_path, auth, json=payload)
+    if created["ok"]:
+        append_history("asset_uploaded", host, f"Contenido subido: {name}")
     return {
         "host": host,
         "ok": created["ok"],
@@ -671,14 +743,64 @@ def load_fleet():
         if host in seen:
             continue
         seen.add(host)
-        fleet.append({"host": host, "name": clean_host_name(item.get("name"), host)})
+        fleet.append(clean_host_config(item, host))
     return fleet
+
+
+def public_host(item):
+    auth = item.get("auth") if isinstance(item.get("auth"), dict) else {}
+    return {
+        "host": item["host"],
+        "name": item["name"],
+        "maintenance": bool(item.get("maintenance")),
+        "notes": item.get("notes", ""),
+        "auth": {
+            "enabled": bool(auth.get("enabled")),
+            "username": str(auth.get("username", "")),
+            "hasPassword": bool(auth.get("password")),
+            "apiVersion": auth.get("apiVersion", "auto"),
+        },
+    }
 
 
 def save_fleet(fleet):
     temporary = CONFIG_PATH.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(fleet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, CONFIG_PATH)
+
+
+def clean_host_config(item, host=None):
+    host = validate_private_host(host or item.get("host"))
+    return {
+        "host": host,
+        "name": clean_host_name(item.get("name"), host),
+        "maintenance": bool(item.get("maintenance")),
+        "notes": clean_notes(item.get("notes")),
+        "auth": clean_auth_config(item.get("auth") if isinstance(item.get("auth"), dict) else None),
+    }
+
+
+def clean_auth_config(value, existing=None):
+    value = value if isinstance(value, dict) else {}
+    existing = existing if isinstance(existing, dict) else {}
+    enabled = bool(value.get("enabled", existing.get("enabled", False)))
+    username = " ".join(str(value.get("username", existing.get("username", ""))).strip().split())[:80]
+    password = str(existing.get("password", ""))
+    if "password" in value:
+        password = str(value.get("password") or "")
+    if value.get("clearPassword"):
+        password = ""
+    api_version = str(value.get("apiVersion", existing.get("apiVersion", "auto")))
+    if api_version not in {"auto", "v1.2", "v2"}:
+        api_version = "auto"
+    if not enabled:
+        username = ""
+        password = ""
+    return {"enabled": enabled, "username": username, "password": password, "apiVersion": api_version}
+
+
+def clean_notes(value):
+    return " ".join(str(value or "").strip().split())[:240]
 
 
 def validate_private_host(value):
@@ -695,6 +817,13 @@ def validate_private_host(value):
 def clean_host_name(value, host):
     name = " ".join(str(value or "").strip().split())
     return name[:60] or f"Raspberry {host.split('.')[-1]}"
+
+
+def load_host_config(host):
+    for item in load_fleet():
+        if item["host"] == host:
+            return item
+    return {"host": host, "name": host, "maintenance": False, "auth": {}}
 
 
 def clean_asset_name(value, fallback="Contenido"):
@@ -796,6 +925,139 @@ def auth_from(data):
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
     return (username, password) if username else None
+
+
+def auth_for_host(host, data):
+    manual = auth_from(data)
+    if manual:
+        return manual
+    config = load_host_config(host).get("auth", {})
+    if config.get("enabled") and config.get("username"):
+        return (config["username"], str(config.get("password", "")))
+    return None
+
+
+def api_preference_for_host(host, preferred):
+    if preferred in {"v1.2", "v2"}:
+        return preferred
+    config = load_host_config(host).get("auth", {})
+    value = config.get("apiVersion")
+    return value if value in {"v1.2", "v2"} else "auto"
+
+
+def append_history(kind, host, message, detail=None):
+    event = {
+        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "kind": kind,
+        "host": host,
+        "message": str(message)[:300],
+    }
+    if detail:
+        event["detail"] = str(detail)[:500]
+    line = json.dumps(event, ensure_ascii=False)
+    with HISTORY_LOCK:
+        with HISTORY_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+
+def load_history(limit=MAX_HISTORY_ITEMS):
+    try:
+        lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    events = []
+    for line in lines[-limit:]:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return list(reversed(events))
+
+
+def diagnose_host(host, auth, preferred):
+    config = load_host_config(host)
+    monitor = monitor_status(host)
+    api_preferred = api_preference_for_host(host, preferred)
+    detected = detect_api(host, auth, api_preferred)
+    if detected["ok"]:
+        active = [asset for asset in detected["assets"] if asset_status_server(asset) == "active"]
+        return {
+            "host": host,
+            "ok": True,
+            "status": "online",
+            "severity": "ok" if not config.get("maintenance") else "maintenance",
+            "message": "API disponible",
+            "version": detected["version"],
+            "assets": len(detected["assets"]),
+            "active": len(active),
+            "maintenance": bool(config.get("maintenance")),
+            "monitor": monitor_summary(monitor),
+        }
+    status = detected.get("status", 0)
+    if config.get("maintenance"):
+        severity = "maintenance"
+        label = "mantenimiento"
+        message = "Pantalla marcada en mantenimiento"
+    elif status in {401, 403}:
+        severity = "warning"
+        label = "api_protegida"
+        message = "API protegida: configura usuario y contrasena de Screenly"
+    elif status == 0:
+        severity = "error"
+        label = "sin_red"
+        message = "No responde por red desde el servidor"
+    else:
+        severity = "warning"
+        label = "api_error"
+        message = detected.get("error") or "Screenly responde con error"
+    return {
+        "host": host,
+        "ok": False,
+        "status": label,
+        "severity": severity,
+        "message": message,
+        "error": detected.get("error"),
+        "httpStatus": status,
+        "maintenance": bool(config.get("maintenance")),
+        "monitor": monitor_summary(monitor),
+    }
+
+
+def asset_status_server(asset):
+    enabled = asset.get("is_enabled") in {True, 1, "1"}
+    if not enabled:
+        return "inactive"
+    now = datetime.now(timezone.utc)
+    try:
+        start = datetime.fromisoformat(str(asset.get("start_date", "")).replace("Z", "+00:00"))
+    except ValueError:
+        start = None
+    try:
+        end = datetime.fromisoformat(str(asset.get("end_date", "")).replace("Z", "+00:00"))
+    except ValueError:
+        end = None
+    if end and end.year < 9999 and end < now:
+        return "inactive"
+    if start and start > now:
+        return "scheduled"
+    return "active"
+
+
+def find_duplicate_asset(assets, name, marker):
+    wanted_name = str(name or "").strip().lower()
+    wanted_marker = Path(str(marker or "")).name.lower()
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_name = str(asset.get("name") or asset.get("title") or "").strip().lower()
+        asset_uri = Path(str(asset.get("uri") or "")).name.lower()
+        if wanted_name and asset_name == wanted_name:
+            return asset
+        if wanted_marker and asset_uri and wanted_marker == asset_uri:
+            return asset
+    return None
 
 
 def load_monitor_config():
@@ -980,3 +1242,4 @@ if __name__ == "__main__":
     print(f"Centro de mando Screenly disponible en {url}")
     print("Para cerrarlo, cierra esta ventana o pulsa Ctrl+C.")
     app.run(host="127.0.0.1", port=5000, debug=False)
+    duplicate_policy = str(data.get("duplicatePolicy", "skip"))

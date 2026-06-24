@@ -4,6 +4,7 @@ vendor/
 monitor.json
 .session_secret
 fleet.json
+history.jsonl
 .env
 .venv/
 venv/

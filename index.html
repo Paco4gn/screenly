@@ -22,6 +22,7 @@
           <button class="nav-item active" type="button" data-view="library"><span class="nav-icon">&#9638;</span> Biblioteca</button>
           <button class="nav-item" type="button" data-view="monitor"><span class="nav-icon">&#9673;</span> En pantalla</button>
           <button class="nav-item" type="button" data-view="screens"><span class="nav-icon">&#9635;</span> Pantallas</button>
+          <button class="nav-item" type="button" data-view="ops"><span class="nav-icon">&#9881;</span> Centro operativo</button>
         </nav>
 
         <div class="sidebar-section">
@@ -111,6 +112,7 @@
               <strong><span id="selectedCount">0</span> seleccionados</strong>
               <button id="bulkEnableBtn" class="secondary-button compact" type="button">Activar</button>
               <button id="bulkDisableBtn" class="secondary-button compact" type="button">Desactivar</button>
+              <button id="bulkScheduleBtn" class="secondary-button compact" type="button">Programar</button>
               <button id="bulkDeleteBtn" class="danger-button compact" type="button">Eliminar</button>
             </div>
 
@@ -143,6 +145,29 @@
             <div id="monitorGrid" class="monitor-grid"></div>
           </section>
         </div>
+
+        <div id="opsView" class="view">
+          <section class="screen-section">
+            <div class="section-intro monitor-intro">
+              <div><h2>Centro operativo</h2><p>Diagnostico, alertas, historial y mantenimiento de la flota.</p></div>
+              <button id="runDiagnosticsBtn" class="secondary-button" type="button">Ejecutar diagnostico</button>
+            </div>
+            <div class="ops-grid">
+              <section class="ops-panel">
+                <h3>Diagnostico</h3>
+                <div id="diagnosticsList" class="diagnostics-list"></div>
+              </section>
+              <section class="ops-panel">
+                <h3>Alertas</h3>
+                <div id="alertsList" class="alerts-list"></div>
+              </section>
+              <section class="ops-panel wide">
+                <h3>Historial de acciones</h3>
+                <div id="historyList" class="history-list"></div>
+              </section>
+            </div>
+          </section>
+        </div>
       </main>
     </div>
 
@@ -161,6 +186,7 @@
             <label>Fin<input id="endDate" name="endDate" type="datetime-local" value="9999-01-01T00:00"></label>
             <label>Duracion (segundos)<input id="duration" name="duration" type="number" min="0" value="0"></label>
             <label class="toggle-field"><span>Activar al crear</span><input id="enabled" name="enabled" type="checkbox" role="switch" checked></label>
+            <label class="toggle-field"><span>Evitar duplicados</span><input id="avoidDuplicates" name="avoidDuplicates" type="checkbox" role="switch" checked></label>
             <input id="skipAssetCheck" name="skipAssetCheck" type="hidden" value="1">
           </div>
         </div>
@@ -200,6 +226,19 @@
         </div>
         <footer class="modal-footer"><span>Los cambios solo afectan a este panel.</span><div><button class="secondary-button" type="button" data-close="fleetDialog">Cerrar</button></div></footer>
       </div>
+    </dialog>
+
+    <dialog id="scheduleDialog" class="modal small-modal">
+      <form id="scheduleForm" method="dialog">
+        <header class="modal-header"><div><h2>Programacion masiva</h2><p>Aplicar fechas, duracion y estado a los contenidos seleccionados.</p></div><button class="close-button" type="button" data-close="scheduleDialog" aria-label="Cerrar">&times;</button></header>
+        <div class="modal-body form-grid">
+          <label>Inicio<input id="bulkStartDate" type="datetime-local"></label>
+          <label>Fin<input id="bulkEndDate" type="datetime-local" value="9999-01-01T00:00"></label>
+          <label>Duracion (segundos)<input id="bulkDuration" type="number" min="0" value="0"></label>
+          <label class="toggle-field"><span>Contenido activo</span><input id="bulkEnabled" type="checkbox" role="switch" checked></label>
+        </div>
+        <footer class="modal-footer"><span id="scheduleSummary"></span><div><button class="secondary-button" type="button" data-close="scheduleDialog">Cancelar</button><button class="primary-button" type="submit">Aplicar</button></div></footer>
+      </form>
     </dialog>
 
     <div id="toastRegion" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>

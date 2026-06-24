@@ -123,6 +123,60 @@ class AppValidationTests(unittest.TestCase):
         self.assertEqual(specific, {"token": "specific", "port": 9000})
         self.assertEqual(fallback, {"token": "legacy", "port": 9000})
 
+    def test_screen_credentials_are_used_but_not_exposed(self):
+        fleet = [
+            {
+                "host": "192.168.20.223",
+                "name": "Pantalla",
+                "auth": {
+                    "enabled": True,
+                    "username": "screenly",
+                    "password": "secret",
+                    "apiVersion": "v1.2",
+                },
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "fleet.json"
+            config_path.write_text(json.dumps(fleet), encoding="utf-8")
+            with patch.object(app_module, "CONFIG_PATH", config_path):
+                response = self.client.get("/api/hosts")
+                auth = app_module.auth_for_host("192.168.20.223", {})
+
+        payload = response.get_json()["hosts"][0]
+        self.assertEqual(auth, ("screenly", "secret"))
+        self.assertTrue(payload["auth"]["hasPassword"])
+        self.assertNotIn("password", payload["auth"])
+
+    @patch("app.detect_api")
+    @patch("app.monitor_status", return_value={"ok": False, "connected": False, "reason": "unconfigured"})
+    def test_diagnostics_marks_maintenance_screens(self, monitor_status, detect_api):
+        detect_api.return_value = {
+            "ok": False,
+            "version": None,
+            "assets": [],
+            "error": "No se puede conectar con la Raspberry",
+            "status": 0,
+        }
+        fleet = [
+            {
+                "host": "192.168.20.223",
+                "name": "Pantalla",
+                "maintenance": True,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "fleet.json"
+            config_path.write_text(json.dumps(fleet), encoding="utf-8")
+            with patch.object(app_module, "CONFIG_PATH", config_path):
+                response = self.client.post(
+                    "/api/diagnostics", json={"hosts": ["192.168.20.223"]}
+                )
+
+        result = response.get_json()["results"][0]
+        self.assertEqual(result["severity"], "maintenance")
+        self.assertEqual(result["status"], "mantenimiento")
+
 
 if __name__ == "__main__":
     unittest.main()
