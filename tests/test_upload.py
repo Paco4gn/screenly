@@ -56,6 +56,7 @@ class NormalizeUploadedFileTests(unittest.TestCase):
         client = app_module.app.test_client()
         with client.session_transaction() as login_session:
             login_session["authenticated_email"] = app_module.APP_EMAIL
+            login_session["role"] = "admin"
         response = client.post(
             "/api/upload",
             data={

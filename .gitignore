@@ -6,6 +6,7 @@ monitor.json
 fleet.json
 history.jsonl
 settings.json
+users.json
 .env
 .venv/
 venv/

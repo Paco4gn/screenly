@@ -10,6 +10,7 @@ const state = {
   nowPlaying: [],
   diagnostics: [],
   history: [],
+  users: [],
   view: 'library',
   role: 'admin',
   settings: { defaultAuth: { enabled: false, username: '', hasPassword: false, apiVersion: 'auto' } },
@@ -26,7 +27,7 @@ const el = Object.fromEntries([
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
   'libraryView', 'monitorView', 'monitorGrid', 'screensView', 'onlineCount', 'activeCount', 'scheduledCount',
-  'opsView', 'runDiagnosticsBtn', 'diagnosticsList', 'alertsList', 'historyList',
+  'opsView', 'runDiagnosticsBtn', 'diagnosticsList', 'alertsList', 'historyList', 'usersPanel', 'usersList', 'userAddForm', 'newUserEmail', 'newUserPassword', 'newUserRole',
   'offlineCount', 'allBadge', 'activeBadge', 'scheduledBadge', 'inactiveBadge', 'searchInput',
   'screenFilter', 'sortSelect', 'autoRefreshToggle', 'bulkBar', 'selectedCount', 'bulkEnableBtn', 'bulkDisableBtn',
   'bulkScheduleBtn', 'bulkDeleteBtn', 'selectVisible', 'assetsBody', 'statusGrid', 'assetDialog',
@@ -62,7 +63,7 @@ function authPayload() {
 
 function hostLabel(host) {
   const record = hostRecord(host)
-  return record.name && record.name !== host ? `${record.name} · ${host}` : host
+  return record.name && record.name !== host ? `${record.name} - ${host}` : host
 }
 
 function canOperate() {
@@ -205,7 +206,7 @@ function renderAssets() {
     previousHost = host
     return `${groupHeader}<tr data-key="${escapeHtml(key)}">
       <td class="check-column"><input class="row-check" type="checkbox" ${checked} aria-label="Seleccionar ${escapeHtml(asset.name || id)}"></td>
-      <td><div class="asset-title"><span class="asset-thumb">${type.icon}</span><span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} · ${statusLabel(status)}</small></span></div></td>
+      <td><div class="asset-title"><span class="asset-thumb">${type.icon}</span><span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} - ${statusLabel(status)}</small></span></div></td>
       <td><span class="host-chip" title="${escapeHtml(host)}">${escapeHtml(hostRecord(host).name)}</span></td>
       <td class="schedule-cell"><span>${formatDate(asset.start_date, 'Sin inicio')}</span><small>hasta ${formatDate(asset.end_date, 'sin limite')}</small></td>
       <td>${formatDuration(asset.duration)}</td>
@@ -278,6 +279,41 @@ function renderOps() {
       <strong>${escapeHtml(event.message || event.kind)}</strong>
       <small>${escapeHtml(event.host || 'Panel')}</small>
     </article>`).join('') : '<div class="empty-state"><strong>Sin historial</strong><span>Las acciones importantes se registraran aqui.</span></div>'
+  renderUsers()
+}
+
+function roleLabel(role) {
+  return role === 'admin' ? 'Administrador' : role === 'operator' ? 'Operador' : 'Solo lectura'
+}
+
+function renderUsers() {
+  if (!el.usersPanel || !el.usersList) return
+  el.usersPanel.hidden = !canAdmin()
+  if (!canAdmin()) return
+  if (!state.users.length) {
+    el.usersList.innerHTML = '<div class="empty-manage"><strong>Sin usuarios cargados</strong><span>Actualiza el centro operativo para consultar las cuentas.</span></div>'
+    return
+  }
+  el.usersList.innerHTML = state.users.map((user) => `
+    <article class="user-row" data-user-email="${escapeHtml(user.email)}">
+      <div class="user-identity">
+        <strong>${escapeHtml(user.email)}</strong>
+        <small>${user.active ? 'Acceso activo' : 'Acceso bloqueado'} - ${roleLabel(user.role)}</small>
+      </div>
+      <label>Rol
+        <select class="user-role-input">
+          <option value="admin"${user.role === 'admin' ? ' selected' : ''}>Administrador</option>
+          <option value="operator"${user.role === 'operator' ? ' selected' : ''}>Operador</option>
+          <option value="viewer"${user.role === 'viewer' ? ' selected' : ''}>Solo lectura</option>
+        </select>
+      </label>
+      <label class="user-active-toggle"><span>Activo</span><input class="user-active-input" type="checkbox" ${user.active ? 'checked' : ''}></label>
+      <label>Nueva contrasena<input class="user-password-input" type="password" autocomplete="new-password" placeholder="Dejar igual"></label>
+      <div class="user-actions">
+        <button class="secondary-button compact" type="button" data-user-action="save" data-email="${escapeHtml(user.email)}">Guardar</button>
+        <button class="row-button danger" type="button" data-user-action="delete" data-email="${escapeHtml(user.email)}" title="Eliminar usuario" aria-label="Eliminar usuario">&#10005;</button>
+      </div>
+    </article>`).join('')
 }
 
 function renderMonitor() {
@@ -420,6 +456,7 @@ async function loadSession() {
   }
   el.addAssetBtn.hidden = !canOperate() || state.view !== 'library'
   el.manageHostsBtn.hidden = !canAdmin()
+  if (el.usersPanel) el.usersPanel.hidden = !canAdmin()
 }
 
 async function loadSettings() {
@@ -972,7 +1009,10 @@ function switchView(view) {
     renderMonitor()
     refreshNowPlaying(false)
   }
-  if (view === 'ops') refreshDiagnostics(false)
+  if (view === 'ops') {
+    refreshDiagnostics(false)
+    loadUsers()
+  }
   configureMonitorTimer()
   closeSidebar()
 }
@@ -1001,6 +1041,87 @@ async function loadHistory() {
     state.history = data.events || []
   } catch {
     state.history = []
+  }
+}
+
+async function loadUsers() {
+  if (!canAdmin()) {
+    state.users = []
+    renderUsers()
+    return
+  }
+  try {
+    const data = await fleetRequest('/api/users')
+    state.users = Array.isArray(data.users) ? data.users : []
+  } catch (error) {
+    state.users = []
+    toast('No se pudieron cargar usuarios', error.message, 'error')
+  }
+  renderUsers()
+}
+
+async function addUser(event) {
+  event.preventDefault()
+  if (!canAdmin()) return
+  try {
+    const data = await fleetRequest('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: el.newUserEmail.value.trim(),
+        password: el.newUserPassword.value,
+        role: el.newUserRole.value,
+        active: true,
+      }),
+    })
+    el.userAddForm.reset()
+    state.users.push(data.user)
+    renderUsers()
+    await loadHistory()
+    renderOps()
+    toast('Usuario creado', `${data.user.email} ya puede entrar como ${roleLabel(data.user.role)}.`, 'success')
+  } catch (error) {
+    toast('No se pudo crear usuario', error.message, 'error')
+  }
+}
+
+async function saveUser(email, row) {
+  if (!canAdmin()) return
+  try {
+    const password = row.querySelector('.user-password-input').value
+    const payload = {
+      role: row.querySelector('.user-role-input').value,
+      active: row.querySelector('.user-active-input').checked,
+    }
+    if (password) payload.password = password
+    const data = await fleetRequest(`/api/users/${encodeURIComponent(email)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    state.users = state.users.map((user) => user.email === email ? data.user : user)
+    renderUsers()
+    await loadHistory()
+    renderOps()
+    toast('Usuario actualizado', data.user.email, 'success')
+  } catch (error) {
+    toast('No se pudo guardar usuario', error.message, 'error')
+  }
+}
+
+async function deleteUser(email) {
+  if (!canAdmin()) return
+  const accepted = await confirmAction('Eliminar usuario', `Se eliminara la cuenta ${email}.`, 'Eliminar')
+  if (!accepted) return
+  try {
+    await fleetRequest(`/api/users/${encodeURIComponent(email)}`, { method: 'DELETE' })
+    state.users = state.users.filter((user) => user.email !== email)
+    renderUsers()
+    await loadHistory()
+    renderOps()
+    toast('Usuario eliminado', email)
+  } catch (error) {
+    toast('No se pudo eliminar usuario', error.message, 'error')
   }
 }
 
@@ -1157,6 +1278,15 @@ el.addAssetBtn.addEventListener('click', openAssetDialog)
 el.assetForm.addEventListener('submit', submitAsset)
 el.editForm.addEventListener('submit', submitEdit)
 el.scheduleForm.addEventListener('submit', submitBulkSchedule)
+el.userAddForm.addEventListener('submit', addUser)
+el.usersList.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-user-action]')
+  if (!button) return
+  const email = button.dataset.email
+  const row = button.closest('.user-row')
+  if (button.dataset.userAction === 'save') saveUser(email, row)
+  if (button.dataset.userAction === 'delete') deleteUser(email)
+})
 el.mobileMenuBtn.addEventListener('click', toggleSidebar)
 el.sidebarBackdrop.addEventListener('click', closeSidebar)
 el.searchInput.addEventListener('input', () => { state.search = el.searchInput.value; renderAssets() })

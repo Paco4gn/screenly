@@ -13,6 +13,7 @@ class AppValidationTests(unittest.TestCase):
         app_module.LOGIN_ATTEMPTS.clear()
         with self.client.session_transaction() as login_session:
             login_session["authenticated_email"] = app_module.APP_EMAIL
+            login_session["role"] = "admin"
 
     def test_api_requires_application_login(self):
         guest = app_module.app.test_client()
@@ -34,6 +35,38 @@ class AppValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
         self.assertEqual(guest.get("/api/health").status_code, 200)
+        password_check.assert_called_once()
+
+    @patch("app.check_password_hash", return_value=True)
+    def test_stored_user_login_sets_its_role(self, password_check):
+        guest = app_module.app.test_client()
+        with tempfile.TemporaryDirectory() as directory:
+            users_path = Path(directory) / "users.json"
+            users_path.write_text(
+                json.dumps(
+                    {
+                        "users": [
+                            {
+                                "email": "operador@feval.com",
+                                "passwordHash": "hash",
+                                "role": "operator",
+                                "active": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "USERS_PATH", users_path):
+                response = guest.post(
+                    "/api/login",
+                    json={"email": "operador@feval.com", "password": "provided-securely"},
+                )
+                session_response = guest.get("/api/session")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["role"], "operator")
+        self.assertEqual(session_response.get_json()["role"], "operator")
         password_check.assert_called_once()
 
     def test_health_has_local_security_headers(self):
@@ -177,6 +210,87 @@ class AppValidationTests(unittest.TestCase):
         self.assertEqual(api, "v1.2")
         self.assertTrue(payload["hasPassword"])
         self.assertNotIn("password", payload)
+
+    def test_admin_can_manage_users_without_exposing_password_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            users_path = Path(directory) / "users.json"
+            with patch.object(app_module, "USERS_PATH", users_path):
+                response = self.client.post(
+                    "/api/users",
+                    json={
+                        "email": "visor@feval.com",
+                        "password": "password-segura",
+                        "role": "viewer",
+                    },
+                )
+                list_response = self.client.get("/api/users")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.get_json()["user"]["role"], "viewer")
+        payload = list_response.get_json()["users"]
+        self.assertTrue(any(user["email"] == "visor@feval.com" for user in payload))
+        self.assertFalse(any("passwordHash" in user or "password" in user for user in payload))
+
+    def test_operator_cannot_manage_users(self):
+        with self.client.session_transaction() as login_session:
+            login_session["authenticated_email"] = "operador@feval.com"
+            login_session["role"] = "operator"
+        with tempfile.TemporaryDirectory() as directory:
+            users_path = Path(directory) / "users.json"
+            users_path.write_text(
+                json.dumps(
+                    {
+                        "users": [
+                            {
+                                "email": "operador@feval.com",
+                                "passwordHash": "hash",
+                                "role": "operator",
+                                "active": True,
+                            },
+                            {
+                                "email": app_module.APP_EMAIL,
+                                "passwordHash": app_module.APP_PASSWORD_HASH,
+                                "role": "admin",
+                                "active": True,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "USERS_PATH", users_path):
+                response = self.client.get("/api/users")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_cannot_delete_the_current_admin_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            users_path = Path(directory) / "users.json"
+            users_path.write_text(
+                json.dumps(
+                    {
+                        "users": [
+                            {
+                                "email": app_module.APP_EMAIL,
+                                "passwordHash": app_module.APP_PASSWORD_HASH,
+                                "role": "admin",
+                                "active": True,
+                            },
+                            {
+                                "email": "otro@feval.com",
+                                "passwordHash": "hash",
+                                "role": "admin",
+                                "active": True,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "USERS_PATH", users_path):
+                response = self.client.delete(f"/api/users/{app_module.APP_EMAIL}")
+
+        self.assertEqual(response.status_code, 400)
 
     @patch("app.detect_api")
     @patch("app.monitor_status", return_value={"ok": False, "connected": False, "reason": "unconfigured"})

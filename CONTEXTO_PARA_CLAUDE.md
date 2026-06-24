@@ -4,9 +4,9 @@ Este documento resume la conversacion, las decisiones tomadas y el estado real d
 proyecto Fleetboard. Esta pensado para entregar el repositorio a otro asistente y
 que pueda continuar sin volver a investigar todo desde cero.
 
-> Seguridad: no se incluye ninguna contrasena, token ni contenido de `fleet.json`
-> o `monitor.json`. Las credenciales SSH solo deben introducirse durante la
-> instalacion y nunca deben subirse a GitHub.
+> Seguridad: no se incluye ninguna contrasena, token ni contenido de `fleet.json`,
+> `settings.json`, `users.json` o `monitor.json`. Las credenciales SSH solo deben
+> introducirse durante la instalacion y nunca deben subirse a GitHub.
 
 ## Objetivo del usuario
 
@@ -64,6 +64,10 @@ Las Raspberry iniciales usan estas IP:
 15. El usuario pidio subir el proyecto a `Paco4gn/screenly`. Tras instalar y
     autenticar GitHub CLI, se creo la rama `codex/fleetboard-screenly`, se hizo el
     commit inicial y se abrio el pull request numero 1.
+16. Despues se incorporo un control de acceso con gestion de cuentas desde
+    `Centro operativo > Usuarios y roles`. El administrador inicial sale de las
+    variables de entorno y las cuentas creadas desde el panel se guardan en
+    `users.json`, que no se sube a GitHub.
 
 ## Que hace actualmente Fleetboard
 
@@ -82,6 +86,9 @@ Las Raspberry iniciales usan estas IP:
 - Para videos, reconstruye la reproduccion en el navegador y sincroniza la
   posicion consultada al reproductor aproximadamente cada segundo.
 - Para imagenes, muestra el recurso real que Screenly esta presentando.
+- Gestiona usuarios locales con tres roles: administrador, operador y solo
+  lectura. El administrador puede crear cuentas, cambiar contrasenas, bloquear
+  accesos y asignar roles.
 
 ## Arquitectura
 
@@ -91,6 +98,9 @@ Las Raspberry iniciales usan estas IP:
 - `index.html`, `styles.css`, `app.js`: interfaz Fleetboard.
 - `INICIAR_PANEL.bat`: instala dependencias en `vendor` si faltan e inicia Flask.
 - `fleet.json`: lista local de pantallas. Esta ignorado por Git.
+- `settings.json`: credenciales globales opcionales para las Raspberry. Esta
+  ignorado por Git.
+- `users.json`: cuentas locales y hashes de contrasena. Esta ignorado por Git.
 - `monitor.json`: tokens del agente por IP. Esta ignorado por Git.
 
 El panel se abre en `http://127.0.0.1:5000` y solo escucha en el ordenador local.
@@ -142,13 +152,17 @@ Las instrucciones completas y la desinstalacion estan en
 - No actualizar Screenly OSE ni instalar una version diferente.
 - No cambiar la playlist ni la configuracion interna desde el agente.
 - No guardar la contrasena SSH.
-- No subir `fleet.json`, `monitor.json`, `vendor`, `.env` ni caches a GitHub.
+- No subir `fleet.json`, `settings.json`, `users.json`, `monitor.json`, `vendor`,
+  `.env` ni caches a GitHub.
 - Aceptar solamente IPv4 privadas para nuevas pantallas.
 - Mantener el panel sencillo de abrir desde Windows mediante archivos `.bat`.
 - La API cambia entre versiones antiguas de Screenly; conservar la deteccion y
   normalizacion existente en `app.py`.
 - La indicacion de que una pantalla requiere clave no debe aparecer simplemente
   por estar desconectada. Diferenciar autenticacion, red y agente no instalado.
+- Los permisos se aplican en backend: `admin` puede administrar usuarios,
+  pantallas y eliminaciones; `operator` puede operar contenidos; `viewer` solo
+  consulta.
 
 ## Problemas que conviene revisar a continuacion
 

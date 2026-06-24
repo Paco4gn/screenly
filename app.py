@@ -24,14 +24,16 @@ if VENDOR_DIR.exists():
 from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory, session, stream_with_context
 import requests
 from werkzeug.exceptions import Forbidden, HTTPException
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 CONFIG_PATH = BASE_DIR / "fleet.json"
 MONITOR_CONFIG_PATH = BASE_DIR / "monitor.json"
 HISTORY_PATH = BASE_DIR / "history.jsonl"
 SETTINGS_PATH = BASE_DIR / "settings.json"
+USERS_PATH = BASE_DIR / "users.json"
 CONFIG_LOCK = Lock()
 SETTINGS_LOCK = Lock()
+USERS_LOCK = Lock()
 HISTORY_LOCK = Lock()
 CURRENT_ASSET_LOCK = Lock()
 CURRENT_ASSET_CACHE = {}
@@ -47,6 +49,7 @@ APP_PASSWORD_HASH = os.environ.get(
 APP_ROLE = os.environ.get("CENTRO_MANDO_ROLE", "admin").strip().lower()
 if APP_ROLE not in {"admin", "operator", "viewer"}:
     APP_ROLE = "admin"
+ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
 LOGIN_ATTEMPTS = {}
 LOGIN_LOCK = Lock()
 LOGIN_MAX_ATTEMPTS = 5
@@ -103,9 +106,109 @@ def register_failed_login(client):
 
 
 def require_role(required):
-    levels = {"viewer": 1, "operator": 2, "admin": 3}
-    if levels[APP_ROLE] < levels[required]:
+    current = session.get("role", "viewer")
+    if ROLE_LEVELS.get(current, 0) < ROLE_LEVELS[required]:
         raise Forbidden("Tu usuario no tiene permisos para esta accion")
+
+
+def normalize_email(value):
+    return " ".join(str(value or "").strip().lower().split())[:160]
+
+
+def bootstrap_user():
+    return {
+        "email": APP_EMAIL,
+        "passwordHash": APP_PASSWORD_HASH,
+        "role": APP_ROLE,
+        "active": True,
+        "createdAt": "bootstrap",
+    }
+
+
+def clean_user_record(user):
+    if not isinstance(user, dict):
+        return None
+    email = normalize_email(user.get("email"))
+    password_hash = str(user.get("passwordHash", ""))
+    role = str(user.get("role", "viewer")).strip().lower()
+    if role not in ROLE_LEVELS:
+        role = "viewer"
+    if not email or not password_hash:
+        return None
+    return {
+        "email": email,
+        "passwordHash": password_hash,
+        "role": role,
+        "active": bool(user.get("active", True)),
+        "createdAt": str(user.get("createdAt", "")),
+    }
+
+
+def load_users():
+    try:
+        data = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    raw_users = data.get("users") if isinstance(data, dict) else None
+    users = []
+    seen = set()
+    for raw in raw_users or []:
+        user = clean_user_record(raw)
+        if user and user["email"] not in seen:
+            users.append(user)
+            seen.add(user["email"])
+    if not users:
+        users.append(bootstrap_user())
+    return users
+
+
+def save_users(users):
+    cleaned = []
+    seen = set()
+    for raw in users:
+        user = clean_user_record(raw)
+        if user and user["email"] not in seen:
+            cleaned.append(user)
+            seen.add(user["email"])
+    if not any(user["active"] and user["role"] == "admin" for user in cleaned):
+        raise ValueError("Debe quedar al menos un administrador activo")
+    temporary = USERS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"users": cleaned}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, USERS_PATH)
+
+
+def public_user(user):
+    return {
+        "email": user["email"],
+        "role": user["role"],
+        "active": bool(user.get("active", True)),
+        "createdAt": user.get("createdAt", ""),
+    }
+
+
+def find_user(email):
+    normalized = normalize_email(email)
+    return next((user for user in load_users() if user["email"] == normalized), None)
+
+
+def authenticate_user(email, password):
+    normalized = normalize_email(email)
+    for user in load_users():
+        if hmac.compare_digest(user["email"], normalized) and user.get("active", True):
+            if check_password_hash(user["passwordHash"], password):
+                return user
+            return None
+    return None
+
+
+def current_user():
+    email = session.get("authenticated_email")
+    if not email:
+        return None
+    user = find_user(email)
+    if not user or not user.get("active", True):
+        return None
+    return user
 
 
 app = Flask(__name__, static_folder=None)
@@ -122,8 +225,11 @@ app.config.update(
 def require_application_login():
     if request.path in {"/login", "/api/login", "/favicon.ico", "/favicon-32.png", "/favicon-192.png", "/login.css", "/login.js"}:
         return None
-    if session.get("authenticated_email") == APP_EMAIL:
+    user = current_user()
+    if user:
+        session["role"] = user["role"]
         return None
+    session.clear()
     if request.path.startswith("/api/"):
         return jsonify(error="Inicia sesion para continuar"), 401
     return redirect("/login")
@@ -141,7 +247,7 @@ def secure_local_response(response):
 
 @app.get("/login")
 def login_page():
-    if session.get("authenticated_email") == APP_EMAIL:
+    if current_user():
         return redirect("/")
     return send_from_directory(BASE_DIR, "login.html")
 
@@ -156,9 +262,8 @@ def login_api():
     if blocked_for:
         return jsonify(error=f"Demasiados intentos. Espera {blocked_for} segundos."), 429
 
-    valid_email = hmac.compare_digest(email, APP_EMAIL)
-    valid_password = check_password_hash(APP_PASSWORD_HASH, password)
-    if not (valid_email and valid_password):
+    user = authenticate_user(email, password)
+    if not user:
         blocked = register_failed_login(client)
         status = 429 if blocked else 401
         message = "Demasiados intentos. Espera 5 minutos." if blocked else "Correo o contrasena incorrectos"
@@ -168,8 +273,9 @@ def login_api():
         LOGIN_ATTEMPTS.pop(client, None)
     session.clear()
     session.permanent = True
-    session["authenticated_email"] = APP_EMAIL
-    return jsonify(ok=True)
+    session["authenticated_email"] = user["email"]
+    session["role"] = user["role"]
+    return jsonify(ok=True, role=user["role"])
 
 
 @app.post("/api/logout")
@@ -180,7 +286,90 @@ def logout_api():
 
 @app.get("/api/session")
 def session_api():
-    return jsonify(email=session.get("authenticated_email"), role=APP_ROLE)
+    return jsonify(email=session.get("authenticated_email"), role=session.get("role", "viewer"))
+
+
+@app.get("/api/users")
+def get_users():
+    require_role("admin")
+    return jsonify(users=[public_user(user) for user in load_users()], roles=list(ROLE_LEVELS.keys()))
+
+
+@app.post("/api/users")
+def create_user():
+    require_role("admin")
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email"))
+    password = str(data.get("password", ""))
+    role = str(data.get("role", "viewer")).strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise ValueError("Introduce un correo valido")
+    if len(password) < 8:
+        raise ValueError("La contrasena debe tener al menos 8 caracteres")
+    if role not in ROLE_LEVELS:
+        raise ValueError("Rol no valido")
+    with USERS_LOCK:
+        users = load_users()
+        if any(user["email"] == email for user in users):
+            raise ValueError("Ya existe una cuenta con ese correo")
+        user = {
+            "email": email,
+            "passwordHash": generate_password_hash(password),
+            "role": role,
+            "active": bool(data.get("active", True)),
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        users.append(user)
+        save_users(users)
+    append_history("user_created", None, f"Usuario creado: {email}", f"Rol {role}")
+    return jsonify(user=public_user(user)), 201
+
+
+@app.patch("/api/users/<path:email>")
+def update_user(email):
+    require_role("admin")
+    data = request.get_json(silent=True) or {}
+    wanted = normalize_email(email)
+    role = data.get("role")
+    password = data.get("password")
+    with USERS_LOCK:
+        users = load_users()
+        user = next((item for item in users if item["email"] == wanted), None)
+        if not user:
+            return jsonify(error="Usuario no encontrado"), 404
+        if role is not None:
+            role = str(role).strip().lower()
+            if role not in ROLE_LEVELS:
+                raise ValueError("Rol no valido")
+            user["role"] = role
+        if "active" in data:
+            user["active"] = bool(data.get("active"))
+        if password:
+            password = str(password)
+            if len(password) < 8:
+                raise ValueError("La contrasena debe tener al menos 8 caracteres")
+            user["passwordHash"] = generate_password_hash(password)
+        save_users(users)
+    if session.get("authenticated_email") == wanted:
+        session["role"] = user["role"]
+    append_history("user_updated", None, f"Usuario actualizado: {wanted}", f"Rol {user['role']}")
+    return jsonify(user=public_user(user))
+
+
+@app.delete("/api/users/<path:email>")
+def delete_user(email):
+    require_role("admin")
+    wanted = normalize_email(email)
+    if wanted == session.get("authenticated_email"):
+        raise ValueError("No puedes eliminar tu propia cuenta iniciada")
+    with USERS_LOCK:
+        users = load_users()
+        remaining = [user for user in users if user["email"] != wanted]
+        if len(remaining) == len(users):
+            return jsonify(error="Usuario no encontrado"), 404
+        save_users(remaining)
+    append_history("user_deleted", None, f"Usuario eliminado: {wanted}")
+    return jsonify(ok=True)
 
 
 @app.get("/")

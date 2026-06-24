@@ -170,6 +170,25 @@
                 <h3>Historial de acciones</h3>
                 <div id="historyList" class="history-list"></div>
               </section>
+              <section id="usersPanel" class="ops-panel wide users-panel">
+                <h3>Usuarios y roles</h3>
+                <div class="users-toolbar">
+                  <span>Solo los administradores pueden crear cuentas, cambiar roles o bloquear accesos.</span>
+                </div>
+                <div id="usersList" class="users-list"></div>
+                <form id="userAddForm" class="user-add-form">
+                  <label>Correo<input id="newUserEmail" type="email" autocomplete="off" placeholder="usuario@feval.com" required></label>
+                  <label>Contrasena<input id="newUserPassword" type="password" autocomplete="new-password" minlength="8" required></label>
+                  <label>Rol
+                    <select id="newUserRole">
+                      <option value="operator">Operador</option>
+                      <option value="viewer">Solo lectura</option>
+                      <option value="admin">Administrador</option>
+                    </select>
+                  </label>
+                  <button class="primary-button" type="submit">Crear usuario</button>
+                </form>
+              </section>
             </div>
           </section>
         </div>
