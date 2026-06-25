@@ -211,6 +211,55 @@ class AppValidationTests(unittest.TestCase):
         self.assertTrue(payload["hasPassword"])
         self.assertNotIn("password", payload)
 
+    def test_blank_manual_password_keeps_using_saved_global_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            fleet_path = Path(directory) / "fleet.json"
+            fleet_path.write_text(
+                json.dumps([{"host": "192.168.20.223", "name": "Pantalla"}]),
+                encoding="utf-8",
+            )
+            settings_path.write_text(
+                json.dumps(
+                    {
+                        "defaultAuth": {
+                            "enabled": True,
+                            "username": "screenly",
+                            "password": "global-secret",
+                            "apiVersion": "v1.2",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "SETTINGS_PATH", settings_path):
+                with patch.object(app_module, "CONFIG_PATH", fleet_path):
+                    auth = app_module.auth_for_host(
+                        "192.168.20.223",
+                        {"username": "screenly", "password": ""},
+                    )
+
+        self.assertEqual(auth, ("screenly", "global-secret"))
+
+    @patch("app.screenly_request")
+    def test_asset_media_streams_visual_content_inline(self, screenly_request):
+        screenly_request.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "type": "file",
+                "filename": "cartel.png",
+                "mimetype": "image/png",
+                "content": "aGVsbG8=",
+            },
+        }
+
+        response = self.client.get("/api/asset-media/192.168.20.223/asset-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertEqual(response.data, b"hello")
+
     def test_admin_can_manage_users_without_exposing_password_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             users_path = Path(directory) / "users.json"

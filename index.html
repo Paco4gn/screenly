@@ -5,58 +5,68 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#172c31">
     <title>Centro de mando Screenly</title>
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260619.2">
-    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260619.2">
-    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260619.2">
-    <link rel="stylesheet" href="styles.css?v=20260619.1">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260625.1">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260625.1">
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260625.1">
+    <link rel="stylesheet" href="styles.css?v=20260625.2">
   </head>
   <body>
     <div class="app-shell">
       <aside id="appSidebar" class="sidebar">
         <div class="brand">
-          <img class="brand-mark" src="favicon.ico?v=20260619" alt="FEVAL">
+          <img class="brand-mark" src="favicon.ico?v=20260625" alt="FEVAL">
           <div><strong>Centro de mando Screenly</strong><small>FEVAL</small></div>
         </div>
 
-        <nav class="main-nav" aria-label="Navegacion principal">
-          <button class="nav-item active" type="button" data-view="library"><span class="nav-icon">&#9638;</span> Biblioteca</button>
-          <button class="nav-item" type="button" data-view="monitor"><span class="nav-icon">&#9673;</span> En pantalla</button>
-          <button class="nav-item" type="button" data-view="screens"><span class="nav-icon">&#9635;</span> Pantallas</button>
-          <button class="nav-item" type="button" data-view="ops"><span class="nav-icon">&#9881;</span> Centro operativo</button>
-        </nav>
+        <div class="sidebar-main">
+          <nav class="main-nav" aria-label="Navegacion principal">
+            <button class="nav-item active" type="button" data-view="library"><span class="nav-icon">&#9638;</span> Biblioteca</button>
+            <button class="nav-item" type="button" data-view="monitor"><span class="nav-icon">&#9673;</span> En pantalla</button>
+            <button class="nav-item" type="button" data-view="screens"><span class="nav-icon">&#9635;</span> Pantallas</button>
+            <button class="nav-item" type="button" data-view="ops"><span class="nav-icon">&#9881;</span> Centro operativo</button>
+          </nav>
 
-        <div class="sidebar-section">
-          <div class="sidebar-heading">
-            <span>Destino</span>
-            <div class="sidebar-heading-actions">
-              <button id="selectAllBtn" class="text-button" type="button">Todas</button>
-              <button id="manageHostsBtn" class="mini-icon-button" type="button" title="Gestionar pantallas" aria-label="Gestionar pantallas">+</button>
+          <section class="sidebar-section">
+            <div class="sidebar-heading">
+              <span>Destino</span>
+              <div class="sidebar-heading-actions">
+                <button id="selectAllBtn" class="text-button" type="button">Todas</button>
+                <button id="manageHostsBtn" class="mini-icon-button" type="button" title="Gestionar pantallas" aria-label="Gestionar pantallas">+</button>
+              </div>
             </div>
-          </div>
-          <div id="hostList" class="host-list"></div>
-        </div>
+            <div class="host-list-shell">
+              <div id="hostList" class="host-list"></div>
+            </div>
+          </section>
 
-        <details class="settings">
-          <summary>Ajustes de conexion</summary>
-          <label>Version API
-            <select id="apiVersion">
-              <option value="auto">Deteccion automatica</option>
-              <option value="v2">API v2</option>
-              <option value="v1.2">API v1.2</option>
-            </select>
-          </label>
-          <label class="settings-toggle"><span>Usar autenticacion</span><input id="useAuth" type="checkbox" role="switch"></label>
-          <div id="authFields" class="auth-fields" hidden>
-            <label>Usuario<input id="username" autocomplete="off" data-lpignore="true"></label>
-            <label>Contrasena<input id="password" type="password" autocomplete="new-password" data-lpignore="true"></label>
-            <div class="auth-actions">
-              <button id="saveGlobalAuthBtn" class="settings-button" type="button">Guardar para Raspberry</button>
-              <button id="clearGlobalAuthBtn" class="settings-button muted" type="button">Quitar</button>
+          <section class="settings-panel" aria-label="Credenciales Screenly">
+            <div class="settings-head">
+              <div>
+                <strong>Credenciales Screenly</strong>
+                <small id="authScopeNote">Configura un acceso global o usa uno propio por Raspberry.</small>
+              </div>
+              <button id="editSelectedAuthBtn" class="settings-link" type="button">Individual</button>
+            </div>
+            <label>Version API
+              <select id="apiVersion">
+                <option value="auto">Deteccion automatica</option>
+                <option value="v2">API v2</option>
+                <option value="v1.2">API v1.2</option>
+              </select>
+            </label>
+            <label class="settings-toggle"><span>Usar credenciales globales</span><input id="useAuth" type="checkbox" role="switch"></label>
+            <div id="authFields" class="auth-fields" hidden>
+              <label>Usuario<input id="username" autocomplete="off" data-lpignore="true" placeholder="screenly"></label>
+              <label>Contrasena<input id="password" type="password" autocomplete="new-password" data-lpignore="true" placeholder="Solo se reemplaza si escribes una nueva"></label>
+              <div class="auth-actions">
+                <button id="saveGlobalAuthBtn" class="settings-button" type="button">Guardar global</button>
+                <button id="clearGlobalAuthBtn" class="settings-button muted" type="button">Usar solo individuales</button>
+              </div>
             </div>
             <small id="globalAuthStatus" class="settings-note">Sin credenciales guardadas.</small>
-          </div>
-          <label class="settings-toggle"><span>Actualizar cada minuto</span><input id="autoRefreshToggle" type="checkbox" role="switch"></label>
-        </details>
+            <label class="settings-toggle settings-toggle-spaced"><span>Actualizar cada minuto</span><input id="autoRefreshToggle" type="checkbox" role="switch"></label>
+          </section>
+        </div>
 
         <div class="sidebar-footer">
           <span class="local-dot"></span>
@@ -266,6 +276,6 @@
     </dialog>
 
     <div id="toastRegion" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
-    <script src="app.js?v=20260619.1"></script>
+    <script src="app.js?v=20260625.3"></script>
   </body>
 </html>

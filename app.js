@@ -20,9 +20,15 @@ const state = {
 let refreshToken = 0
 let selectionRefreshTimer = null
 let fleetAbortController = null
+let previewHydrationTimer = null
+let previewObserver = null
+let pendingVideoPreviews = []
+let activeVideoPreviewLoads = 0
+
+const MAX_PARALLEL_VIDEO_PREVIEWS = 2
 
 const el = Object.fromEntries([
-  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'saveGlobalAuthBtn', 'clearGlobalAuthBtn', 'globalAuthStatus', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
+  'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'saveGlobalAuthBtn', 'clearGlobalAuthBtn', 'globalAuthStatus', 'authScopeNote', 'editSelectedAuthBtn', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
   'manageHostsBtn', 'fleetDialog', 'hostManageList', 'hostAddForm', 'newHostName', 'newHostIp',
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
@@ -48,22 +54,46 @@ function hostRecord(host) {
   return state.hosts.find((item) => item.host === host) || { host, name: host }
 }
 
+function globalAuthRecord() {
+  return state.settings.defaultAuth || { enabled: false, username: '', hasPassword: false, apiVersion: 'auto' }
+}
+
 function selectedHosts() {
   return [...document.querySelectorAll('.host-check:checked')].map((input) => input.value)
 }
 
 function authPayload() {
-  if (!el.useAuth.checked) return { username: '', password: '', apiVersion: el.apiVersion.value }
-  return {
-    username: el.username.value.trim(),
-    password: el.password.value,
-    apiVersion: el.apiVersion.value,
-  }
+  if (!el.useAuth.checked) return { apiVersion: el.apiVersion.value }
+  const username = el.username.value.trim()
+  const password = el.password.value
+  if (!password) return { apiVersion: el.apiVersion.value }
+  return { username, password, apiVersion: el.apiVersion.value }
 }
 
 function hostLabel(host) {
   const record = hostRecord(host)
   return record.name && record.name !== host ? `${record.name} - ${host}` : host
+}
+
+function hostAuthState(host) {
+  const record = hostRecord(host)
+  const own = record.auth || {}
+  const global = globalAuthRecord()
+  if (own.enabled && own.username) {
+    return {
+      mode: 'own',
+      label: own.hasPassword ? `Propias: ${own.username}` : `Propias incompletas: ${own.username}`,
+      hint: own.hasPassword ? 'Usa credenciales propias guardadas.' : 'Tiene usuario propio, pero falta la contrasena.',
+    }
+  }
+  if (global.enabled && global.username) {
+    return {
+      mode: 'global',
+      label: global.hasPassword ? `Globales: ${global.username}` : `Globales incompletas: ${global.username}`,
+      hint: global.hasPassword ? 'Usa las credenciales globales guardadas.' : 'Hay usuario global, pero falta la contrasena.',
+    }
+  }
+  return { mode: 'none', label: 'Sin credenciales', hint: 'No hay credenciales guardadas para esta Raspberry.' }
 }
 
 function canOperate() {
@@ -126,19 +156,25 @@ function visibleAssets() {
   return items
 }
 
+function playlistItems(host) {
+  return allAssets()
+    .filter((candidate) => candidate.host === host)
+    .sort((left, right) => Number(left.asset.play_order || 0) - Number(right.asset.play_order || 0))
+}
+
 function renderHosts() {
   const existingChecks = [...document.querySelectorAll('.host-check')]
   const chosenHosts = new Set(existingChecks.length ? selectedHosts() : fleetHosts())
   const resultMap = new Map(state.results.map((result) => [result.host, result]))
   el.hostList.innerHTML = state.hosts.map(({ host, name }) => {
     const result = resultMap.get(host)
-    const suffix = host.split('.').pop()
     const maintenance = Boolean(hostRecord(host).maintenance)
+    const authState = hostAuthState(host)
     const status = maintenance ? 'maintenance' : result ? (result.ok ? 'ok' : result.authRequired ? 'warn' : 'bad') : ''
     const detail = maintenance ? 'Mantenimiento' : result ? (result.ok ? `${(result.assets || []).length} contenidos` : diagnosticLabel(result)) : 'Pendiente'
     return `<div class="host-item">
       <input class="host-check" type="checkbox" value="${host}" ${chosenHosts.has(host) ? 'checked' : ''} aria-label="Seleccionar ${escapeHtml(name)}">
-      <button class="host-main" type="button" data-solo="${host}" title="Administrar solo esta pantalla"><span><strong>${escapeHtml(name)}</strong><small>${host} - ${detail}</small></span></button>
+      <button class="host-main" type="button" data-solo="${host}" title="${escapeHtml(authState.hint)}"><span><strong>${escapeHtml(name)}</strong><small>${host} - ${detail}${authState.mode !== 'none' ? ` - ${escapeHtml(authState.label)}` : ''}</small></span></button>
       <i class="host-state ${status}" aria-hidden="true"></i>
     </div>`
   }).join('')
@@ -184,6 +220,7 @@ function render() {
 function renderAssets() {
   const items = visibleAssets()
   if (!items.length) {
+    resetPreviewHydration()
     el.assetsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><strong>No hay contenidos que mostrar</strong><span>Prueba otro filtro o anade un contenido nuevo.</span></div></td></tr>`
     el.selectVisible.checked = false
     el.selectVisible.indeterminate = false
@@ -192,21 +229,27 @@ function renderAssets() {
 
   const soloHosts = selectedHosts()
   const soloHost = soloHosts.length === 1 ? soloHosts[0] : null
-  const orderableCount = soloHost ? allAssets().filter((item) => item.host === soloHost && isCurrentlyActive(item.asset)).length : 0
+  const imagePreviewBudget = soloHost ? 18 : 8
+  const videoPreviewBudget = soloHost ? 8 : 3
+  const orderableCount = soloHost ? playlistItems(soloHost).length : 0
   let previousHost = ''
-  el.assetsBody.innerHTML = items.map(({ host, asset }) => {
+  el.assetsBody.innerHTML = items.map(({ host, asset }, index) => {
     const id = assetId(asset)
     const key = assetKey(host, asset)
     const status = assetStatus(asset)
     const type = assetType(asset)
     const checked = state.selected.has(key) ? 'checked' : ''
-    const canOrder = soloHost === host && orderableCount > 1 && isCurrentlyActive(asset)
+    const useRichPreview = type.label === 'Imagen'
+      ? (index < imagePreviewBudget || status === 'active')
+      : (index < videoPreviewBudget || status === 'active')
+    const canOrder = soloHost === host && orderableCount > 1
     const groupHeader = !soloHost && state.screen === 'all' && host !== previousHost
       ? `<tr class="screen-group-row"><td colspan="7"><strong>${escapeHtml(hostLabel(host))}</strong><span>${allAssets().filter((item) => item.host === host).length} contenidos</span></td></tr>` : ''
     previousHost = host
+    const preview = useRichPreview ? assetPreviewMarkup(host, asset, type, key) : `<span class="asset-thumb">${type.icon}</span>`
     return `${groupHeader}<tr data-key="${escapeHtml(key)}">
       <td class="check-column"><input class="row-check" type="checkbox" ${checked} aria-label="Seleccionar ${escapeHtml(asset.name || id)}"></td>
-      <td><div class="asset-title"><span class="asset-thumb">${type.icon}</span><span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} - ${statusLabel(status)}</small></span></div></td>
+      <td><div class="asset-title ${useRichPreview ? 'with-preview' : ''}">${preview}<span><strong title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || asset.title || 'Sin nombre')}</strong><small>${type.label} - ${statusLabel(status)}</small></span></div></td>
       <td><span class="host-chip" title="${escapeHtml(host)}">${escapeHtml(hostRecord(host).name)}</span></td>
       <td class="schedule-cell"><span>${formatDate(asset.start_date, 'Sin inicio')}</span><small>hasta ${formatDate(asset.end_date, 'sin limite')}</small></td>
       <td>${formatDuration(asset.duration)}</td>
@@ -223,6 +266,103 @@ function renderAssets() {
   const selectedVisible = items.filter((item) => state.selected.has(assetKey(item.host, item.asset))).length
   el.selectVisible.checked = selectedVisible === items.length
   el.selectVisible.indeterminate = selectedVisible > 0 && selectedVisible < items.length
+  hydrateAssetPreviews()
+}
+
+function assetMediaUrl(host, asset) {
+  return `/api/asset-media/${encodeURIComponent(host)}/${encodeURIComponent(assetId(asset))}`
+}
+
+function assetPreviewMarkup(host, asset, type, key) {
+  if (type.label === 'Imagen') {
+    return `<span class="asset-media loading"><img src="${assetMediaUrl(host, asset)}" loading="lazy" alt="Vista previa de ${escapeHtml(asset.name || asset.title || 'contenido')}"></span>`
+  }
+  if (type.label === 'Video') {
+    return `<span class="asset-media video loading"><video class="asset-preview-video" data-key="${escapeHtml(key)}" data-src="${assetMediaUrl(host, asset)}" muted playsinline preload="none"></video></span>`
+  }
+  return `<span class="asset-thumb">${type.icon}</span>`
+}
+
+function resetPreviewHydration() {
+  if (previewHydrationTimer) clearTimeout(previewHydrationTimer)
+  previewHydrationTimer = null
+  if (previewObserver) previewObserver.disconnect()
+  previewObserver = null
+  pendingVideoPreviews = []
+  activeVideoPreviewLoads = 0
+}
+
+function enqueueVideoPreview(video) {
+  if (!video || video.dataset.previewQueued === '1' || video.dataset.previewLoaded === '1') return
+  video.dataset.previewQueued = '1'
+  pendingVideoPreviews.push(video)
+  flushVideoPreviewQueue()
+}
+
+function flushVideoPreviewQueue() {
+  while (activeVideoPreviewLoads < MAX_PARALLEL_VIDEO_PREVIEWS && pendingVideoPreviews.length) {
+    const video = pendingVideoPreviews.shift()
+    if (!video?.isConnected || video.dataset.previewLoaded === '1') continue
+
+    activeVideoPreviewLoads += 1
+    video.dataset.previewLoaded = '1'
+    const wrapper = video.parentElement
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      wrapper?.classList.remove('loading')
+      activeVideoPreviewLoads = Math.max(0, activeVideoPreviewLoads - 1)
+      flushVideoPreviewQueue()
+    }
+
+    video.addEventListener('loadeddata', () => {
+      try { video.pause() } catch {}
+      finish()
+    }, { once: true })
+    video.addEventListener('error', finish, { once: true })
+    video.preload = 'metadata'
+    video.src = video.dataset.src || ''
+    video.load()
+  }
+}
+
+function hydrateAssetPreviews() {
+  resetPreviewHydration()
+  el.assetsBody.querySelectorAll('.asset-media img').forEach((image) => {
+    image.addEventListener('load', () => image.parentElement?.classList.remove('loading'), { once: true })
+    image.addEventListener('error', () => image.parentElement?.classList.remove('loading'), { once: true })
+  })
+  const videos = [...el.assetsBody.querySelectorAll('.asset-preview-video')]
+  if (!videos.length) return
+
+  previewHydrationTimer = window.setTimeout(() => {
+    if ('IntersectionObserver' in window) {
+      previewObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return
+          enqueueVideoPreview(entry.target)
+          previewObserver?.unobserve(entry.target)
+        })
+      }, { rootMargin: '180px 0px' })
+      videos.forEach((video) => previewObserver.observe(video))
+      return
+    }
+    videos.slice(0, MAX_PARALLEL_VIDEO_PREVIEWS * 2).forEach((video) => enqueueVideoPreview(video))
+  }, 120)
+}
+
+function applyPlaylistOrderLocally(host, orderedIds) {
+  const result = state.results.find((entry) => entry.host === host && entry.ok)
+  if (!result?.assets) return
+  const positions = new Map(orderedIds.map((assetIdValue, index) => [String(assetIdValue), index]))
+  result.assets = [...result.assets]
+    .sort((left, right) => {
+      const leftPosition = positions.get(assetId(left))
+      const rightPosition = positions.get(assetId(right))
+      return (leftPosition ?? Number(left.play_order || 0)) - (rightPosition ?? Number(right.play_order || 0))
+    })
+    .map((asset, index) => ({ ...asset, play_order: positions.get(assetId(asset)) ?? index }))
 }
 
 function renderScreens() {
@@ -444,6 +584,7 @@ async function loadHosts() {
   state.results = state.results.filter((result) => allowed.has(result.host))
   if (state.screen !== 'all' && !allowed.has(state.screen)) state.screen = 'all'
   renderHosts()
+  renderAuthScopeNote()
   updatePageContext()
 }
 
@@ -468,6 +609,9 @@ async function loadSettings() {
     el.authFields.hidden = !el.useAuth.checked
     el.username.value = auth.username || ''
     el.password.value = ''
+    el.password.placeholder = auth.hasPassword
+      ? 'Contrasena ya guardada. Escribe aqui solo si quieres cambiarla'
+      : 'Escribe una contrasena para guardarla'
     if (auth.apiVersion) el.apiVersion.value = auth.apiVersion
     renderGlobalAuthStatus()
   } catch {
@@ -476,14 +620,27 @@ async function loadSettings() {
 }
 
 function renderGlobalAuthStatus() {
-  const auth = state.settings.defaultAuth || {}
+  const auth = globalAuthRecord()
   if (!auth.enabled) {
     el.globalAuthStatus.textContent = 'Sin credenciales guardadas.'
+    renderAuthScopeNote()
     return
   }
   el.globalAuthStatus.textContent = auth.hasPassword
-    ? `Guardadas para todas: ${auth.username || 'usuario'}`
-    : `Guardado usuario ${auth.username || 'sin usuario'}, falta contrasena.`
+    ? `Globales guardadas para las Raspberry sin acceso propio: ${auth.username || 'usuario'}. No hace falta volver a escribir la contrasena.`
+    : `Hay un usuario global guardado (${auth.username || 'sin usuario'}), pero falta la contrasena.`
+  renderAuthScopeNote()
+}
+
+function renderAuthScopeNote() {
+  if (!el.authScopeNote) return
+  const hosts = selectedHosts()
+  if (hosts.length === 1) {
+    const authState = hostAuthState(hosts[0])
+    el.authScopeNote.textContent = `${hostRecord(hosts[0]).name}: ${authState.hint}`
+    return
+  }
+  el.authScopeNote.textContent = 'Configura un acceso global o usa uno propio por Raspberry.'
 }
 
 async function saveGlobalAuth() {
@@ -500,6 +657,7 @@ async function saveGlobalAuth() {
     })
     state.settings = data.settings || state.settings
     renderGlobalAuthStatus()
+    renderHosts()
     toast('Credenciales guardadas', 'Se usaran en las Raspberry sin credenciales propias.')
     await refreshActiveView(false)
   } catch (error) {
@@ -518,6 +676,7 @@ async function clearGlobalAuth() {
     el.password.value = ''
     el.authFields.hidden = true
     renderGlobalAuthStatus()
+    renderHosts()
     toast('Credenciales quitadas', 'El panel dejara de usar credenciales globales.')
     await refreshActiveView(false)
   } catch (error) {
@@ -542,8 +701,10 @@ function renderHostManager() {
       <label><span>Contrasena propia</span><input class="host-auth-password" type="password" placeholder="${auth.hasPassword ? 'Guardada' : 'usa global'}"></label>
       <label class="host-auth-check"><span>Mantenimiento</span><input class="host-maintenance" type="checkbox" ${maintenance ? 'checked' : ''}></label>
       <label class="host-notes"><span>Notas</span><input class="host-notes-input" value="${escapeHtml(notes)}" maxlength="240" placeholder="Ubicacion o incidencia"></label>
+      <small class="host-credentials-note"></small>
       <div class="host-row-actions">
         <button class="row-button" type="button" data-host-action="rename" data-host="${host}" title="Guardar pantalla" aria-label="Guardar pantalla">&#10003;</button>
+        <button class="row-button" type="button" data-host-action="use-global" data-host="${host}" title="Usar credenciales globales" aria-label="Usar credenciales globales">&#8634;</button>
         <button class="row-button danger" type="button" data-host-action="remove" data-host="${host}" title="Eliminar pantalla" aria-label="Eliminar pantalla">&#10005;</button>
       </div>
     </div>`).join('')
@@ -551,7 +712,28 @@ function renderHostManager() {
     const row = el.hostManageList.querySelector(`[data-host-row="${CSS.escape(host)}"]`)
     const select = row?.querySelector('.host-api-input')
     if (select) select.value = auth.apiVersion || 'auto'
+    if (row) syncHostManageRow(row, host)
   })
+}
+
+function syncHostManageRow(row, host) {
+  const enabled = row.querySelector('.host-auth-enabled')?.checked
+  const user = row.querySelector('.host-auth-user')
+  const password = row.querySelector('.host-auth-password')
+  if (user) user.disabled = !enabled
+  if (password) password.disabled = !enabled
+  const note = row.querySelector('.host-credentials-note')
+  const authState = hostAuthState(host)
+  if (!note) return
+  if (enabled) {
+    note.textContent = password?.value || hostRecord(host).auth?.hasPassword
+      ? 'Esta Raspberry usara sus credenciales propias guardadas.'
+      : 'Activa las credenciales propias y escribe una contrasena para reemplazar la actual.'
+    return
+  }
+  note.textContent = authState.mode === 'global'
+    ? `Esta Raspberry heredara las globales guardadas (${globalAuthRecord().username || 'usuario'}).`
+    : 'Sin credenciales propias: usara las globales si existen.'
 }
 
 async function addFleetHost(event) {
@@ -595,6 +777,22 @@ async function renameFleetHost(host, row) {
     toast('Pantalla actualizada', data.host.name)
   } catch (error) {
     toast('No se pudo guardar', error.message, 'error')
+  }
+}
+
+async function useGlobalForHost(host) {
+  try {
+    const data = await fleetRequest(`/api/hosts/${encodeURIComponent(host)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        auth: { enabled: false, username: '', clearPassword: true, apiVersion: 'auto' },
+      }),
+    })
+    await loadHosts()
+    toast('Credenciales individuales quitadas', `${data.host.name} volvera a usar las globales si existen.`)
+    await refreshActiveView(false)
+  } catch (error) {
+    toast('No se pudo cambiar', error.message, 'error')
   }
 }
 
@@ -913,6 +1111,7 @@ function manageOnly(host) {
   state.screen = host
   el.screenFilter.value = host
   state.selected.clear()
+  renderAuthScopeNote()
   switchView('library')
   updatePageContext()
   refreshFleet(false)
@@ -946,9 +1145,7 @@ async function controlPlayback(direction) {
 async function movePlaylistAsset(key, direction) {
   const item = findItem(key)
   if (!item) return
-  const ordered = allAssets()
-    .filter((candidate) => candidate.host === item.host && isCurrentlyActive(candidate.asset))
-    .sort((left, right) => Number(left.asset.play_order || 0) - Number(right.asset.play_order || 0))
+  const ordered = playlistItems(item.host)
   const currentIndex = ordered.findIndex((candidate) => assetKey(candidate.host, candidate.asset) === key)
   const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
   if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) {
@@ -956,13 +1153,21 @@ async function movePlaylistAsset(key, direction) {
   }
   const swapped = [...ordered]
   ;[swapped[currentIndex], swapped[targetIndex]] = [swapped[targetIndex], swapped[currentIndex]]
+  const previousIds = ordered.map((candidate) => assetId(candidate.asset))
+  const swappedIds = swapped.map((candidate) => assetId(candidate.asset))
+  state.sort = 'playlist'
+  el.sortSelect.value = 'playlist'
+  applyPlaylistOrderLocally(item.host, swappedIds)
+  renderAssets()
   try {
     await postJson('order', {
-      hosts: [item.host], orderedIds: swapped.map((candidate) => assetId(candidate.asset)), ...authPayload(),
+      hosts: [item.host], orderedIds: swappedIds, ...authPayload(),
     })
     toast('Playlist actualizada', `${item.asset.name || 'Contenido'} se ha movido.`)
-    await refreshFleet(false)
+    window.setTimeout(() => refreshFleet(false), 250)
   } catch (error) {
+    applyPlaylistOrderLocally(item.host, previousIds)
+    renderAssets()
     toast('No se pudo reordenar', error.message, 'error')
   }
 }
@@ -1264,12 +1469,27 @@ document.querySelectorAll('[data-filter]').forEach((button) => button.addEventLi
 
 el.refreshBtn.addEventListener('click', () => refreshActiveView(true))
 el.manageHostsBtn.addEventListener('click', () => { renderHostManager(); el.fleetDialog.showModal() })
+el.editSelectedAuthBtn.addEventListener('click', () => {
+  renderHostManager()
+  el.fleetDialog.showModal()
+  const hosts = selectedHosts()
+  if (hosts.length === 1) {
+    const row = el.hostManageList.querySelector(`[data-host-row="${CSS.escape(hosts[0])}"]`)
+    row?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+})
 el.hostAddForm.addEventListener('submit', addFleetHost)
+el.hostManageList.addEventListener('change', (event) => {
+  const row = event.target.closest('[data-host-row]')
+  if (!row) return
+  syncHostManageRow(row, row.dataset.hostRow)
+})
 el.hostManageList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-host-action]')
   if (!button) return
   const row = button.closest('[data-host-row]')
   if (button.dataset.hostAction === 'rename') renameFleetHost(button.dataset.host, row)
+  if (button.dataset.hostAction === 'use-global') useGlobalForHost(button.dataset.host)
   if (button.dataset.hostAction === 'remove') removeFleetHost(button.dataset.host)
 })
 el.previousAssetBtn.addEventListener('click', () => controlPlayback('previous'))
@@ -1310,6 +1530,7 @@ el.hostList.addEventListener('change', () => {
   state.screen = 'all'
   el.screenFilter.value = 'all'
   updateBulkBar()
+  renderAuthScopeNote()
   updatePageContext()
   if (state.view === 'monitor') renderMonitor()
   renderAssets()
@@ -1329,6 +1550,7 @@ el.selectAllBtn.addEventListener('click', () => {
   el.screenFilter.value = 'all'
   state.selected.clear()
   updateSelectAllButton()
+  renderAuthScopeNote()
   updatePageContext()
   el.targetSummary.textContent = `${selectedHosts().length} pantallas seleccionadas`
   refreshActiveView(false)

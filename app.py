@@ -580,6 +580,41 @@ def live_media(host, asset_id):
     return Response(stream_with_context(generate()), status=upstream.status_code, headers=forwarded)
 
 
+@app.get("/api/asset-media/<host>/<asset_id>")
+def asset_media(host, asset_id):
+    host = clean_hosts([host])[0]
+    auth = auth_for_host(host, {})
+    path = f"/api/v1/assets/{quote(asset_id, safe='')}/content"
+    response = screenly_request("GET", host, path, auth, timeout=600)
+    if not response["ok"]:
+        return jsonify(error=response["error"]), response.get("status") or 502
+
+    content = response.get("data")
+    if not isinstance(content, dict):
+        return jsonify(error="Screenly no devolvio un contenido visualizable"), 502
+    if content.get("type") == "url":
+        url = str(content.get("url", "")).strip()
+        if not url:
+            return jsonify(error="El contenido remoto no incluye una direccion valida"), 404
+        return redirect(url)
+    if content.get("type") != "file" or not content.get("content"):
+        return jsonify(error="El contenido no es un archivo visualizable"), 404
+
+    try:
+        binary = base64.b64decode(content["content"], validate=True)
+    except (ValueError, TypeError) as error:
+        return jsonify(error=f"El archivo recibido no es valido: {error}"), 502
+
+    filename = Path(str(content.get("filename") or f"asset-{asset_id}")).name
+    return send_file(
+        BytesIO(binary),
+        mimetype=content.get("mimetype") or "application/octet-stream",
+        as_attachment=False,
+        download_name=filename,
+        max_age=60,
+    )
+
+
 @app.post("/api/upload")
 def upload_fleet():
     require_role("operator")
@@ -1161,7 +1196,7 @@ def find_asset(assets, wanted_id):
 def auth_from(data):
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
-    return (username, password) if username else None
+    return (username, password) if username and password else None
 
 
 def auth_for_host(host, data):
