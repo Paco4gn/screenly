@@ -1,5 +1,8 @@
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import app as app_module
@@ -74,6 +77,70 @@ class NormalizeUploadedFileTests(unittest.TestCase):
             created_payload["uri"], "/home/pi/screenly_assets/prueba.mp4"
         )
         self.assertEqual(created_payload["mimetype"], "video")
+
+    @patch("app.detect_api")
+    @patch("app.screenly_request")
+    def test_upload_with_undefined_form_auth_uses_saved_global_credentials(
+        self, screenly_request, detect_api
+    ):
+        detect_api.return_value = {"ok": True, "version": "v1.2"}
+        seen_auth = []
+
+        def request_result(method, host, path, auth, **kwargs):
+            seen_auth.append(auth)
+            if path == "/api/v1/file_asset":
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "data": "/home/pi/screenly_assets/prueba.mp4",
+                }
+            return {"ok": True, "status": 201, "data": {"asset_id": "asset-1"}}
+
+        screenly_request.side_effect = request_result
+        client = app_module.app.test_client()
+        with client.session_transaction() as login_session:
+            login_session["authenticated_email"] = app_module.APP_EMAIL
+            login_session["role"] = "admin"
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            fleet_path = Path(directory) / "fleet.json"
+            fleet_path.write_text(
+                json.dumps([{"host": "192.168.20.223", "name": "Pantalla"}]),
+                encoding="utf-8",
+            )
+            settings_path.write_text(
+                json.dumps(
+                    {
+                        "defaultAuth": {
+                            "enabled": True,
+                            "username": "feval",
+                            "password": "global-secret",
+                            "apiVersion": "v1.2",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "CONFIG_PATH", fleet_path):
+                with patch.object(app_module, "SETTINGS_PATH", settings_path):
+                    response = client.post(
+                        "/api/upload",
+                        data={
+                            "hosts": "192.168.20.223",
+                            "username": "undefined",
+                            "password": "undefined",
+                            "video": (io.BytesIO(b"video-data"), "prueba.mp4", "video/mp4"),
+                            "enabled": "1",
+                            "skipAssetCheck": "1",
+                        },
+                        content_type="multipart/form-data",
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["results"][0]["ok"])
+        self.assertTrue(seen_auth)
+        self.assertTrue(all(auth == ("feval", "global-secret") for auth in seen_auth))
 
 
 if __name__ == "__main__":

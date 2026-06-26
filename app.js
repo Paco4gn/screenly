@@ -22,10 +22,10 @@ let selectionRefreshTimer = null
 let fleetAbortController = null
 let previewHydrationTimer = null
 let previewObserver = null
-let pendingVideoPreviews = []
-let activeVideoPreviewLoads = 0
+let pendingPreviews = []
+let activePreviewLoads = 0
 
-const MAX_PARALLEL_VIDEO_PREVIEWS = 2
+const MAX_PARALLEL_PREVIEWS = 2
 
 const el = Object.fromEntries([
   'hostList', 'apiVersion', 'useAuth', 'authFields', 'username', 'password', 'saveGlobalAuthBtn', 'clearGlobalAuthBtn', 'globalAuthStatus', 'authScopeNote', 'editSelectedAuthBtn', 'selectAllBtn', 'mobileMenuBtn', 'sidebarBackdrop',
@@ -229,19 +229,15 @@ function renderAssets() {
 
   const soloHosts = selectedHosts()
   const soloHost = soloHosts.length === 1 ? soloHosts[0] : null
-  const imagePreviewBudget = soloHost ? 18 : 8
-  const videoPreviewBudget = soloHost ? 8 : 3
   const orderableCount = soloHost ? playlistItems(soloHost).length : 0
   let previousHost = ''
-  el.assetsBody.innerHTML = items.map(({ host, asset }, index) => {
+  el.assetsBody.innerHTML = items.map(({ host, asset }) => {
     const id = assetId(asset)
     const key = assetKey(host, asset)
     const status = assetStatus(asset)
     const type = assetType(asset)
     const checked = state.selected.has(key) ? 'checked' : ''
-    const useRichPreview = type.label === 'Imagen'
-      ? (index < imagePreviewBudget || status === 'active')
-      : (index < videoPreviewBudget || status === 'active')
+    const useRichPreview = type.label === 'Imagen' || type.label === 'Video'
     const canOrder = soloHost === host && orderableCount > 1
     const groupHeader = !soloHost && state.screen === 'all' && host !== previousHost
       ? `<tr class="screen-group-row"><td colspan="7"><strong>${escapeHtml(hostLabel(host))}</strong><span>${allAssets().filter((item) => item.host === host).length} contenidos</span></td></tr>` : ''
@@ -273,12 +269,16 @@ function assetMediaUrl(host, asset) {
   return `/api/asset-media/${encodeURIComponent(host)}/${encodeURIComponent(assetId(asset))}`
 }
 
+function liveMediaUrl(host, asset) {
+  return `/api/live-media/${encodeURIComponent(host)}/${encodeURIComponent(assetId(asset))}`
+}
+
 function assetPreviewMarkup(host, asset, type, key) {
   if (type.label === 'Imagen') {
-    return `<span class="asset-media loading"><img src="${assetMediaUrl(host, asset)}" loading="lazy" alt="Vista previa de ${escapeHtml(asset.name || asset.title || 'contenido')}"></span>`
+    return `<span class="asset-media loading"><img class="asset-preview-media" data-src="${liveMediaUrl(host, asset)}" data-fallback="${assetMediaUrl(host, asset)}" loading="lazy" alt="Vista previa de ${escapeHtml(asset.name || asset.title || 'contenido')}"></span>`
   }
   if (type.label === 'Video') {
-    return `<span class="asset-media video loading"><video class="asset-preview-video" data-key="${escapeHtml(key)}" data-src="${assetMediaUrl(host, asset)}" muted playsinline preload="none"></video></span>`
+    return `<span class="asset-media video loading"><video class="asset-preview-media asset-preview-video" data-key="${escapeHtml(key)}" data-src="${liveMediaUrl(host, asset)}" data-fallback="${assetMediaUrl(host, asset)}" muted playsinline preload="none"></video></span>`
   }
   return `<span class="asset-thumb">${type.icon}</span>`
 }
@@ -288,67 +288,88 @@ function resetPreviewHydration() {
   previewHydrationTimer = null
   if (previewObserver) previewObserver.disconnect()
   previewObserver = null
-  pendingVideoPreviews = []
-  activeVideoPreviewLoads = 0
+  pendingPreviews = []
+  activePreviewLoads = 0
 }
 
-function enqueueVideoPreview(video) {
-  if (!video || video.dataset.previewQueued === '1' || video.dataset.previewLoaded === '1') return
-  video.dataset.previewQueued = '1'
-  pendingVideoPreviews.push(video)
-  flushVideoPreviewQueue()
+function enqueuePreview(media) {
+  if (!media || media.dataset.previewQueued === '1' || media.dataset.previewLoaded === '1') return
+  media.dataset.previewQueued = '1'
+  pendingPreviews.push(media)
+  flushPreviewQueue()
 }
 
-function flushVideoPreviewQueue() {
-  while (activeVideoPreviewLoads < MAX_PARALLEL_VIDEO_PREVIEWS && pendingVideoPreviews.length) {
-    const video = pendingVideoPreviews.shift()
-    if (!video?.isConnected || video.dataset.previewLoaded === '1') continue
+function flushPreviewQueue() {
+  while (activePreviewLoads < MAX_PARALLEL_PREVIEWS && pendingPreviews.length) {
+    const media = pendingPreviews.shift()
+    if (!media?.isConnected || media.dataset.previewLoaded === '1') continue
 
-    activeVideoPreviewLoads += 1
-    video.dataset.previewLoaded = '1'
-    const wrapper = video.parentElement
+    activePreviewLoads += 1
+    media.dataset.previewLoaded = '1'
+    const wrapper = media.parentElement
     let settled = false
     const finish = () => {
       if (settled) return
       settled = true
       wrapper?.classList.remove('loading')
-      activeVideoPreviewLoads = Math.max(0, activeVideoPreviewLoads - 1)
-      flushVideoPreviewQueue()
+      activePreviewLoads = Math.max(0, activePreviewLoads - 1)
+      flushPreviewQueue()
+    }
+    const retryFallback = () => {
+      if (!media.dataset.fallback || media.dataset.fallbackTried === '1') return false
+      media.dataset.fallbackTried = '1'
+      media.src = media.dataset.fallback
+      if (media.tagName === 'VIDEO') media.load()
+      return true
     }
 
-    video.addEventListener('loadeddata', () => {
-      try { video.pause() } catch {}
-      finish()
-    }, { once: true })
-    video.addEventListener('error', finish, { once: true })
-    video.preload = 'metadata'
-    video.src = video.dataset.src || ''
-    video.load()
+    if (media.tagName === 'IMG') {
+      media.addEventListener('load', finish, { once: true })
+      const failImage = () => {
+        if (!retryFallback()) finish()
+      }
+      media.addEventListener('error', failImage)
+      media.src = media.dataset.src || ''
+    } else {
+      media.addEventListener('loadedmetadata', () => {
+        const duration = Number(media.duration || 0)
+        const target = Number.isFinite(duration) && duration > 2 ? Math.min(2, duration * 0.08) : 0
+        if (target > 0) {
+          try { media.currentTime = target } catch {}
+        }
+      }, { once: true })
+      media.addEventListener('loadeddata', () => {
+        try { media.pause() } catch {}
+        finish()
+      }, { once: true })
+      media.addEventListener('error', () => {
+        if (!retryFallback()) finish()
+      })
+      media.preload = 'metadata'
+      media.src = media.dataset.src || ''
+      media.load()
+    }
   }
 }
 
 function hydrateAssetPreviews() {
   resetPreviewHydration()
-  el.assetsBody.querySelectorAll('.asset-media img').forEach((image) => {
-    image.addEventListener('load', () => image.parentElement?.classList.remove('loading'), { once: true })
-    image.addEventListener('error', () => image.parentElement?.classList.remove('loading'), { once: true })
-  })
-  const videos = [...el.assetsBody.querySelectorAll('.asset-preview-video')]
-  if (!videos.length) return
+  const previews = [...el.assetsBody.querySelectorAll('.asset-preview-media')]
+  if (!previews.length) return
 
   previewHydrationTimer = window.setTimeout(() => {
     if ('IntersectionObserver' in window) {
       previewObserver = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return
-          enqueueVideoPreview(entry.target)
+          enqueuePreview(entry.target)
           previewObserver?.unobserve(entry.target)
         })
       }, { rootMargin: '180px 0px' })
-      videos.forEach((video) => previewObserver.observe(video))
+      previews.forEach((preview) => previewObserver.observe(preview))
       return
     }
-    videos.slice(0, MAX_PARALLEL_VIDEO_PREVIEWS * 2).forEach((video) => enqueueVideoPreview(video))
+    previews.slice(0, MAX_PARALLEL_PREVIEWS * 2).forEach((preview) => enqueuePreview(preview))
   }, 120)
 }
 
@@ -487,6 +508,8 @@ function renderMonitor() {
       visual = `<video class="live-player" data-host="${host}" data-id="${escapeHtml(id)}" data-position="${position}" data-duration="${duration}" src="/api/live-media/${host}/${encodeURIComponent(id)}" muted autoplay loop playsinline preload="metadata"></video>`
     } else if (result.preview) {
       visual = `<img class="monitor-image" src="${result.preview}" alt="Vista actual de ${name}">`
+    } else if (result.previewStream) {
+      visual = `<img class="monitor-image" src="${escapeHtml(result.previewStream)}" alt="Vista actual de ${name}">`
     } else if (result.previewUrl && String(result.previewUrl).startsWith('http')) {
       visual = `<img class="monitor-image" src="${escapeHtml(result.previewUrl)}" alt="Vista actual de ${name}">`
     } else {
@@ -918,8 +941,12 @@ async function submitAsset(event) {
       const auth = authPayload()
       form.set('hosts', hosts.join(','))
       form.set('apiVersion', auth.apiVersion)
-      form.set('username', auth.username)
-      form.set('password', auth.password)
+      form.delete('username')
+      form.delete('password')
+      if (auth.username && auth.password) {
+        form.set('username', auth.username)
+        form.set('password', auth.password)
+      }
       form.set('enabled', el.enabled.checked ? '1' : '0')
       form.set('skipAssetCheck', '1')
       form.set('duplicatePolicy', el.avoidDuplicates.checked ? 'skip' : 'allow')

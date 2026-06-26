@@ -10,7 +10,8 @@ import secrets
 import tempfile
 import time
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Timer
@@ -37,8 +38,9 @@ USERS_LOCK = Lock()
 HISTORY_LOCK = Lock()
 CURRENT_ASSET_LOCK = Lock()
 CURRENT_ASSET_CACHE = {}
-MAX_FLEET_WORKERS = 6
-MAX_UPLOAD_WORKERS = 3
+MAX_FLEET_WORKERS = 10
+MAX_UPLOAD_WORKERS = 1
+UPLOAD_RETRIES = 2
 MAX_ASSET_NAME_LENGTH = 160
 MAX_HISTORY_ITEMS = 250
 APP_EMAIL = os.environ.get("CENTRO_MANDO_EMAIL", "informatica@feval.com").strip().lower()
@@ -496,7 +498,23 @@ def diagnostics_fleet():
 def now_playing_fleet():
     data = request.get_json(silent=True) or {}
     hosts = clean_hosts(data.get("hosts"))
-    results = parallel_map(hosts, lambda host: current_asset(host, auth_for_host(host, data)))
+    results = parallel_map_timeout(
+        hosts,
+        lambda host: current_asset(host, auth_for_host(host, data)),
+        timeout=6,
+        on_timeout=lambda host: {
+            "host": host,
+            "ok": False,
+            "error": "La Raspberry tarda demasiado en responder",
+            "monitor": {"connected": False, "reason": "timeout"},
+        },
+        on_error=lambda host, error: {
+            "host": host,
+            "ok": False,
+            "error": str(error) or "No se pudo consultar la Raspberry",
+            "monitor": {"connected": False, "reason": "error"},
+        },
+    )
     return jsonify(results=results, checkedAt=datetime.now(timezone.utc).isoformat())
 
 
@@ -509,11 +527,11 @@ def current_asset(host, auth):
             if cached and str(cached.get("asset_id")) == str(telemetry["assetId"]):
                 asset = dict(cached)
         if asset is None:
-            response = screenly_request("GET", host, "/api/v1.2/assets", auth, timeout=8)
+            response = screenly_request("GET", host, "/api/v1.2/assets", auth, timeout=4, connect_timeout=1.5)
             assets = normalize_assets(response.get("data")) if response["ok"] else None
             asset = find_asset(assets or [], telemetry["assetId"])
     else:
-        response = screenly_request("GET", host, "/api/v1/viewer_current_asset", auth, timeout=8)
+        response = screenly_request("GET", host, "/api/v1/viewer_current_asset", auth, timeout=4, connect_timeout=1.5)
         if not response["ok"]:
             error = result_error(host, "v1", response)
             error["monitor"] = monitor_summary(telemetry)
@@ -534,14 +552,7 @@ def current_asset(host, auth):
             "assetId": telemetry.get("assetId"),
         }
     if str(asset.get("mimetype", "")).lower().startswith("image"):
-        asset_id = quote(str(asset["asset_id"]), safe="")
-        content = screenly_request("GET", host, f"/api/v1/assets/{asset_id}/content", auth, timeout=20)
-        payload = content.get("data")
-        if content["ok"] and isinstance(payload, dict) and payload.get("type") == "file" and payload.get("content"):
-            mimetype = payload.get("mimetype") or "image/jpeg"
-            result["preview"] = f"data:{mimetype};base64,{payload['content']}"
-        elif content["ok"] and isinstance(payload, dict) and payload.get("type") == "url":
-            result["previewUrl"] = payload.get("url")
+        result["previewStream"] = f"/api/live-media/{quote(host, safe='')}/{quote(str(asset['asset_id']), safe='')}"
     return result
 
 
@@ -559,21 +570,36 @@ def live_media(host, asset_id):
     try:
         upstream = requests.get(
             f"http://{host}:{config['port']}/media/{quote(asset_id, safe='')}",
-            headers=headers, stream=True, timeout=(5, 30),
+            headers=headers, stream=True, timeout=(2, 12),
         )
     except requests.RequestException as error:
+        return jsonify(error=str(error)), 502
+
+    first_chunk = b""
+    try:
+        iterator = upstream.iter_content(65536)
+        first_chunk = next((chunk for chunk in iterator if chunk), b"")
+    except requests.RequestException as error:
+        upstream.close()
         return jsonify(error=str(error)), 502
 
     forwarded = {}
     for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control"):
         if upstream.headers.get(header):
             forwarded[header] = upstream.headers[header]
+    detected_type = sniff_media_type(first_chunk)
+    if detected_type:
+        forwarded["Content-Type"] = detected_type
 
     def generate():
         try:
-            for chunk in upstream.iter_content(65536):
+            if first_chunk:
+                yield first_chunk
+            for chunk in iterator:
                 if chunk:
                     yield chunk
+        except requests.RequestException:
+            app.logger.warning("Corte leyendo media de %s/%s", host, asset_id, exc_info=True)
         finally:
             upstream.close()
 
@@ -585,7 +611,7 @@ def asset_media(host, asset_id):
     host = clean_hosts([host])[0]
     auth = auth_for_host(host, {})
     path = f"/api/v1/assets/{quote(asset_id, safe='')}/content"
-    response = screenly_request("GET", host, path, auth, timeout=600)
+    response = screenly_request("GET", host, path, auth, timeout=5, connect_timeout=1.5)
     if not response["ok"]:
         return jsonify(error=response["error"]), response.get("status") or 502
 
@@ -884,6 +910,34 @@ def parallel_map(items, worker, max_workers=MAX_FLEET_WORKERS):
         return list(executor.map(worker, items))
 
 
+def parallel_map_timeout(items, worker, timeout, on_timeout, on_error=None, max_workers=MAX_FLEET_WORKERS):
+    if not items:
+        return []
+    workers = max(1, min(max_workers, len(items)))
+    results = [None] * len(items)
+    executor = ThreadPoolExecutor(max_workers=workers)
+    futures = {executor.submit(worker, item): (index, item) for index, item in enumerate(items)}
+    try:
+        try:
+            for future in as_completed(futures, timeout=timeout):
+                index, item = futures[future]
+                try:
+                    results[index] = future.result()
+                except Exception as error:
+                    results[index] = on_error(item, error) if on_error else on_timeout(item)
+        except FuturesTimeout:
+            pass
+
+        for future, (index, item) in futures.items():
+            if results[index] is not None:
+                continue
+            future.cancel()
+            results[index] = on_timeout(item)
+        return results
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def parallel_targets(targets, worker):
     """Run different screens concurrently while preserving order per screen."""
     groups = {}
@@ -919,7 +973,7 @@ def upload_to_host(
         }
     upload_path = "/api/v2/file_asset" if version == "v2" else "/api/v1/file_asset"
     with open(temporary_path, "rb") as content:
-        uploaded = screenly_request(
+        uploaded = screenly_request_retry(
             "POST", host, upload_path, auth,
             files={"file_upload": (filename, content, mimetype)},
             timeout=600,
@@ -1196,6 +1250,10 @@ def find_asset(assets, wanted_id):
 def auth_from(data):
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
+    if username.lower() in {"undefined", "null", "none"}:
+        username = ""
+    if password.lower() in {"undefined", "null", "none"}:
+        password = ""
     return (username, password) if username and password else None
 
 
@@ -1372,7 +1430,7 @@ def monitor_status(host):
     try:
         response = requests.get(
             f"http://{host}:{config['port']}/status",
-            headers={"X-Fleet-Token": config["token"]}, timeout=(2, 3),
+            headers={"X-Fleet-Token": config["token"]}, timeout=(1, 1.5),
         )
         if response.status_code in {401, 403}:
             return {"ok": False, "connected": True, "reason": "unauthorized"}
@@ -1393,11 +1451,11 @@ def monitor_summary(telemetry):
     }
 
 
-def screenly_request(method, host, path, auth, timeout=120, **kwargs):
+def screenly_request(method, host, path, auth, timeout=120, connect_timeout=2, **kwargs):
     try:
         response = requests.request(
             method, f"http://{host}{path}", auth=auth,
-            timeout=(4, timeout), headers={"Accept": "application/json"}, **kwargs,
+            timeout=(connect_timeout, timeout), headers={"Accept": "application/json"}, **kwargs,
         )
         try:
             data = response.json()
@@ -1409,6 +1467,52 @@ def screenly_request(method, host, path, auth, timeout=120, **kwargs):
         return {"ok": True, "status": response.status_code, "data": data}
     except requests.RequestException as error:
         return {"ok": False, "status": 0, "error": network_error_message(error)}
+
+
+def screenly_request_retry(method, host, path, auth, timeout=120, connect_timeout=4, retries=UPLOAD_RETRIES, **kwargs):
+    last_response = None
+    for attempt in range(retries + 1):
+        rewind_upload_files(kwargs)
+        response = screenly_request(method, host, path, auth, timeout=timeout, connect_timeout=connect_timeout, **kwargs)
+        last_response = response
+        if response["ok"] or response.get("status"):
+            return response
+        if attempt < retries:
+            time.sleep(1.5 * (attempt + 1))
+    return last_response or {"ok": False, "status": 0, "error": "Error de red al comunicarse con Screenly"}
+
+
+def sniff_media_type(chunk):
+    if not chunk:
+        return None
+    if chunk.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if chunk.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if chunk.startswith(b"GIF87a") or chunk.startswith(b"GIF89a"):
+        return "image/gif"
+    if chunk.startswith(b"RIFF") and chunk[8:12] == b"WEBP":
+        return "image/webp"
+    if len(chunk) > 12 and chunk[4:8] == b"ftyp":
+        return "video/mp4"
+    return None
+
+
+def rewind_upload_files(kwargs):
+    files = kwargs.get("files")
+    if not isinstance(files, dict):
+        return
+    for value in files.values():
+        stream = None
+        if hasattr(value, "seek"):
+            stream = value
+        elif isinstance(value, (tuple, list)) and len(value) >= 2 and hasattr(value[1], "seek"):
+            stream = value[1]
+        if stream:
+            try:
+                stream.seek(0)
+            except OSError:
+                pass
 
 
 def response_error_message(data, status):
@@ -1444,7 +1548,7 @@ def detect_api(host, auth, preferred="auto"):
     last_status = 0
     for version in versions:
         path = "/api/v2/assets" if version == "v2" else "/api/v1.2/assets"
-        response = screenly_request("GET", host, path, auth)
+        response = screenly_request("GET", host, path, auth, timeout=6, connect_timeout=1.5)
         last_status = response.get("status", 0)
         if response["ok"]:
             assets = normalize_assets(response.get("data"))
