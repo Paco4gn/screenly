@@ -11,9 +11,11 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+set "REQ=requirements.txt"
+if exist "requirements-agent.txt" set "REQ=requirements-agent.txt"
 if not exist "vendor\paramiko" (
     echo Preparando el instalador por primera vez...
-    %PYTHON% -m pip install --disable-pip-version-check --no-input --target vendor -r requirements.txt
+    %PYTHON% -m pip install --disable-pip-version-check --no-input --target vendor -r "%REQ%"
     if errorlevel 1 (
         echo No se pudieron preparar las dependencias.
         pause

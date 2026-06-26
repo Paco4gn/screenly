@@ -185,6 +185,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .manage-screen { width: 100%; margin-top: 12px; }
 
 .monitor-intro { justify-content: space-between; }
+.ops-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .live-indicator { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font-size: 12px; font-weight: 800; }
 .live-indicator i, .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #35b979; box-shadow: 0 0 0 4px rgba(53,185,121,.13); }
 .monitor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; padding: 16px; }

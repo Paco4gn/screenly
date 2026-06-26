@@ -11,17 +11,20 @@ Este procedimiento anade el monitor de posicion y video sincronizado a otra Rasp
 
 ## Instalacion automatica
 
-1. Abre la carpeta `screenly-fleet`.
-2. Haz doble clic en `INSTALAR_AGENTE.bat`.
-3. Escribe la IP completa, por ejemplo `192.168.20.229`.
-4. Escribe el nombre que aparecera en Centro de mando Screenly.
-5. Escribe la URL del panel. En la VM actual es `http://172.31.139.45`.
-6. Escribe el usuario y contrasena del panel para que el instalador pida el token correcto al servidor.
-7. El instalador utilizara el usuario SSH `pi`.
-8. Escribe la contrasena SSH. Mientras escribes no aparecen caracteres; es normal.
-9. Espera hasta ver el mensaje `LISTO`.
-10. Abre o actualiza `http://172.31.139.45`.
-11. Entra en `En pantalla`.
+1. Desde cualquier ordenador de la red, abre `http://172.31.139.45`.
+2. Entra con un usuario administrador.
+3. Ve a `Centro operativo` y pulsa `Descargar instalador`.
+4. Descomprime `instalador-agente-screenly.zip` en una carpeta local.
+5. Haz doble clic en `INSTALAR_AGENTE.bat`.
+6. Escribe la IP completa, por ejemplo `192.168.20.229`.
+7. Escribe el nombre que aparecera en Centro de mando Screenly.
+8. Escribe la URL del panel. En la VM actual es `http://172.31.139.45`.
+9. Escribe el usuario y contrasena del panel para que el instalador pida el token correcto al servidor.
+10. El instalador utilizara el usuario SSH `pi`.
+11. Escribe la contrasena SSH. Mientras escribes no aparecen caracteres; es normal.
+12. Espera hasta ver el mensaje `LISTO`.
+13. Abre o actualiza `http://172.31.139.45`.
+14. Entra en `En pantalla`.
 
 El instalador se puede ejecutar de nuevo sobre la misma IP para actualizar o reparar el agente. No crea pantallas duplicadas.
 

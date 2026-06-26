@@ -10,6 +10,7 @@ import secrets
 import tempfile
 import time
 from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 from concurrent.futures import TimeoutError as FuturesTimeout
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -418,6 +419,31 @@ def get_history():
 @app.get("/api/health")
 def health():
     return jsonify(ok=True, service="fleetboard", screens=len(load_fleet()))
+
+
+@app.get("/api/agent-installer.zip")
+def agent_installer_zip():
+    require_role("admin")
+    archive = BytesIO()
+    files = [
+        ("INSTALAR_AGENTE.bat", BASE_DIR / "INSTALAR_AGENTE.bat"),
+        ("instalar_agente.py", BASE_DIR / "instalar_agente.py"),
+        ("fleet_monitor_agent.py", BASE_DIR / "fleet_monitor_agent.py"),
+        ("requirements-agent.txt", BASE_DIR / "requirements-agent.txt"),
+        ("INSTALAR_AGENTE.md", BASE_DIR / "INSTALAR_AGENTE.md"),
+    ]
+    with ZipFile(archive, "w", ZIP_DEFLATED) as zip_file:
+        for archive_name, source in files:
+            if source.exists():
+                zip_file.write(source, archive_name)
+    archive.seek(0)
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="instalador-agente-screenly.zip",
+        max_age=0,
+    )
 
 
 @app.post("/api/monitor-token")

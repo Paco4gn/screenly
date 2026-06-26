@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,6 +78,19 @@ class AppValidationTests(unittest.TestCase):
         self.assertTrue(response.get_json()["ok"])
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+
+    def test_agent_installer_zip_contains_portable_files(self):
+        response = self.client.get("/api/agent-installer.zip")
+
+        self.assertEqual(response.status_code, 200)
+        with zipfile.ZipFile(BytesIO(response.data)) as archive:
+            names = set(archive.namelist())
+
+        self.assertIn("INSTALAR_AGENTE.bat", names)
+        self.assertIn("instalar_agente.py", names)
+        self.assertIn("fleet_monitor_agent.py", names)
+        self.assertIn("requirements-agent.txt", names)
+        self.assertIn("INSTALAR_AGENTE.md", names)
 
     def test_favicon_is_served(self):
         response = self.client.get("/favicon.ico")

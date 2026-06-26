@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260625.1">
     <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260625.1">
     <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260625.1">
-    <link rel="stylesheet" href="styles.css?v=20260625.2">
+    <link rel="stylesheet" href="styles.css?v=20260626.4">
   </head>
   <body>
     <div class="app-shell">
@@ -165,7 +165,10 @@
           <section class="screen-section">
             <div class="section-intro monitor-intro">
               <div><h2>Centro operativo</h2><p>Diagnostico, alertas, historial y mantenimiento de la flota.</p></div>
-              <button id="runDiagnosticsBtn" class="secondary-button" type="button">Ejecutar diagnostico</button>
+              <div class="ops-actions">
+                <button id="downloadAgentInstallerBtn" class="secondary-button" type="button">Descargar instalador</button>
+                <button id="runDiagnosticsBtn" class="secondary-button" type="button">Ejecutar diagnostico</button>
+              </div>
             </div>
             <div class="ops-grid">
               <section class="ops-panel">
@@ -276,6 +279,6 @@
     </dialog>
 
     <div id="toastRegion" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
-    <script src="app.js?v=20260626.3"></script>
+    <script src="app.js?v=20260626.4"></script>
   </body>
 </html>

@@ -33,7 +33,7 @@ const el = Object.fromEntries([
   'pageTitle', 'pageSubtitle', 'lastUpdated', 'refreshBtn', 'addAssetBtn',
   'playbackControls', 'previousAssetBtn', 'nextAssetBtn',
   'libraryView', 'monitorView', 'monitorGrid', 'screensView', 'onlineCount', 'activeCount', 'scheduledCount',
-  'opsView', 'runDiagnosticsBtn', 'diagnosticsList', 'alertsList', 'historyList', 'usersPanel', 'usersList', 'userAddForm', 'newUserEmail', 'newUserPassword', 'newUserRole',
+  'opsView', 'runDiagnosticsBtn', 'downloadAgentInstallerBtn', 'diagnosticsList', 'alertsList', 'historyList', 'usersPanel', 'usersList', 'userAddForm', 'newUserEmail', 'newUserPassword', 'newUserRole',
   'offlineCount', 'allBadge', 'activeBadge', 'scheduledBadge', 'inactiveBadge', 'searchInput',
   'screenFilter', 'sortSelect', 'autoRefreshToggle', 'bulkBar', 'selectedCount', 'bulkEnableBtn', 'bulkDisableBtn',
   'bulkScheduleBtn', 'bulkDeleteBtn', 'selectVisible', 'assetsBody', 'statusGrid', 'assetDialog',
@@ -1424,6 +1424,11 @@ async function copyAgentCommand(host) {
   }
 }
 
+function downloadAgentInstaller() {
+  window.location.href = '/api/agent-installer.zip'
+  toast('Descarga preparada', 'Abre el ZIP en cualquier ordenador de la red y ejecuta INSTALAR_AGENTE.bat.')
+}
+
 function assetType(asset) {
   const value = String(asset.mimetype || asset.type || asset.uri || '').toLowerCase()
   if (value.includes('image') || /\.(jpg|jpeg|png|gif|webp)(\?|$)/.test(value)) return { icon: 'IMG', label: 'Imagen' }
@@ -1623,6 +1628,7 @@ el.statusGrid.addEventListener('click', (event) => {
   if (button) manageOnly(button.dataset.manageHost)
 })
 el.runDiagnosticsBtn.addEventListener('click', () => refreshDiagnostics(true))
+el.downloadAgentInstallerBtn.addEventListener('click', downloadAgentInstaller)
 el.diagnosticsList.addEventListener('click', (event) => {
   const agentButton = event.target.closest('[data-agent-host]')
   if (agentButton) return copyAgentCommand(agentButton.dataset.agentHost)
