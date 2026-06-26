@@ -16,6 +16,7 @@ import paramiko
 import requests
 
 
+DEFAULT_PANEL_URL = "http://172.31.139.45"
 MONITOR_CONFIG = BASE_DIR / "monitor.json"
 FLEET_CONFIG = BASE_DIR / "fleet.json"
 AGENT_FILE = BASE_DIR / "fleet_monitor_agent.py"
@@ -71,6 +72,39 @@ def load_or_create_token(host):
     data["hosts"] = hosts
     data["port"] = 8765
     write_json_atomic(MONITOR_CONFIG, data)
+    return token
+
+
+def clean_panel_url(value):
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        raise ValueError("La URL del panel no puede estar vacia")
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    return url
+
+
+def login_panel(panel_url, email, password):
+    session = requests.Session()
+    response = session.post(
+        panel_url + "/api/login",
+        json={"email": email, "password": password},
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError("El panel no acepto el inicio de sesion")
+    return session
+
+
+def request_panel_token(session, panel_url, host):
+    response = session.post(panel_url + "/api/monitor-token", json={"host": host}, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    token = str(payload.get("token", "")).strip()
+    if not token:
+        raise RuntimeError("El panel no devolvio token para el agente")
     return token
 
 
@@ -130,7 +164,24 @@ def verify(host, token):
     raise RuntimeError("El agente no responde: {}".format(last_error))
 
 
-def add_to_panel(host, name):
+def add_to_panel(host, name, panel_url=None, session=None):
+    if panel_url and session:
+        response = session.get(panel_url + "/api/hosts", timeout=10)
+        response.raise_for_status()
+        hosts = response.json().get("hosts", [])
+        existing = next((item for item in hosts if item.get("host") == host), None)
+        if existing:
+            session.patch(
+                panel_url + "/api/hosts/{}".format(host),
+                json={"name": name}, timeout=10,
+            ).raise_for_status()
+        else:
+            session.post(
+                panel_url + "/api/hosts",
+                json={"host": host, "name": name}, timeout=10,
+            ).raise_for_status()
+        return "Panel del servidor actualizado"
+
     try:
         response = requests.get("http://127.0.0.1:5000/api/hosts", timeout=2)
         response.raise_for_status()
@@ -171,21 +222,30 @@ def main():
         host = private_ip(input("IP de la Raspberry: "))
         name = input("Nombre en el panel [Pantalla {}]: ".format(host.split(".")[-1])).strip()
         name = name or "Pantalla {}".format(host.split(".")[-1])
+        panel_url = clean_panel_url(
+            input("URL del panel [{}]: ".format(DEFAULT_PANEL_URL)).strip() or DEFAULT_PANEL_URL
+        )
+        panel_email = input("Usuario del panel [informatica@feval.com]: ").strip() or "informatica@feval.com"
+        panel_password = getpass.getpass("Contrasena del panel: ")
+        if not panel_password:
+            raise ValueError("La contrasena del panel no puede estar vacia")
         username = "pi"
         print("Usuario SSH: pi")
         password = getpass.getpass("Contrasena SSH: ")
         if not password:
             raise ValueError("La contrasena SSH no puede estar vacia")
 
-        print("\n1/3 Conectando y copiando el agente...")
-        token = load_or_create_token(host)
+        print("\n1/4 Conectando con el panel y obteniendo token...")
+        session = login_panel(panel_url, panel_email, panel_password)
+        token = request_panel_token(session, panel_url, host)
+        print("2/4 Conectando y copiando el agente...")
         deploy(host, username, password, token)
-        print("2/3 Servicio instalado y activo.")
+        print("3/4 Servicio instalado y activo.")
         status = verify(host, token)
-        print("3/3 Telemetria verificada: {}".format(status))
-        print(add_to_panel(host, name))
+        print("4/4 Telemetria verificada: {}".format(status))
+        print(add_to_panel(host, name, panel_url, session))
         print("\nLISTO. Actualiza Centro de mando Screenly y abre 'En pantalla'.")
-        print("La contrasena SSH no se ha guardado.")
+        print("Las contrasenas no se han guardado en este ordenador.")
         return 0
     except Exception as error:
         print("\nERROR: {}".format(error))

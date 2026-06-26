@@ -156,6 +156,50 @@ class AppValidationTests(unittest.TestCase):
         self.assertEqual(specific, {"token": "specific", "port": 9000})
         self.assertEqual(fallback, {"token": "legacy", "port": 9000})
 
+    def test_monitor_token_endpoint_returns_server_token_for_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "monitor.json"
+            config_path.write_text(json.dumps({"token": "global-token", "port": 8765}), encoding="utf-8")
+            with patch.object(app_module, "MONITOR_CONFIG_PATH", config_path):
+                response = self.client.post(
+                    "/api/monitor-token",
+                    json={"host": "192.168.20.230"},
+                )
+                repeated = self.client.post(
+                    "/api/monitor-token",
+                    json={"host": "192.168.20.230"},
+                )
+                stored = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["host"], "192.168.20.230")
+        self.assertEqual(response.get_json()["port"], 8765)
+        self.assertEqual(response.get_json()["token"], "global-token")
+        self.assertEqual(response.get_json()["token"], repeated.get_json()["token"])
+        self.assertNotIn("hosts", stored)
+
+    def test_monitor_token_endpoint_keeps_existing_host_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "monitor.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "token": "global-token",
+                        "port": 8765,
+                        "hosts": {"192.168.20.230": {"token": "screen-token"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "MONITOR_CONFIG_PATH", config_path):
+                response = self.client.post(
+                    "/api/monitor-token",
+                    json={"host": "192.168.20.230"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["token"], "screen-token")
+
     def test_screen_credentials_are_used_but_not_exposed(self):
         fleet = [
             {

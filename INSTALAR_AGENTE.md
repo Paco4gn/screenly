@@ -15,15 +15,17 @@ Este procedimiento anade el monitor de posicion y video sincronizado a otra Rasp
 2. Haz doble clic en `INSTALAR_AGENTE.bat`.
 3. Escribe la IP completa, por ejemplo `192.168.20.229`.
 4. Escribe el nombre que aparecera en Centro de mando Screenly.
-5. El instalador utilizara el usuario SSH `pi`.
-6. Escribe la contrasena SSH. Mientras escribes no aparecen caracteres; es normal.
-7. Espera hasta ver el mensaje `LISTO`.
-8. Abre o actualiza `http://127.0.0.1:5000`.
-9. Entra en `En pantalla`.
+5. Escribe la URL del panel. En la VM actual es `http://172.31.139.45`.
+6. Escribe el usuario y contrasena del panel para que el instalador pida el token correcto al servidor.
+7. El instalador utilizara el usuario SSH `pi`.
+8. Escribe la contrasena SSH. Mientras escribes no aparecen caracteres; es normal.
+9. Espera hasta ver el mensaje `LISTO`.
+10. Abre o actualiza `http://172.31.139.45`.
+11. Entra en `En pantalla`.
 
 El instalador se puede ejecutar de nuevo sobre la misma IP para actualizar o reparar el agente. No crea pantallas duplicadas.
 
-Cada Raspberry nueva recibe su propio token de comunicacion. Si ya habia agentes instalados con una version anterior, continuaran funcionando; al ejecutar de nuevo el instalador sobre una de ellas se actualizara el agente y se le asignara su token individual.
+Cada Raspberry nueva recibe su propio token de comunicacion desde el servidor. Si ya habia agentes instalados con una version anterior, continuaran funcionando; al ejecutar de nuevo el instalador sobre una de ellas se actualizara el agente y se le asignara el token que conoce el panel de la VM.
 
 ## Archivos instalados en la Raspberry
 
@@ -70,7 +72,7 @@ Despues elimina la pantalla desde el boton `+` situado junto a `Destino` en Cent
 - `Authentication failed`: usuario o contrasena SSH incorrectos.
 - `El servicio no pudo iniciarse`: revisa el resultado de `journalctl` indicado arriba.
 - El panel muestra la pantalla pero no el video: comprueba que el puerto `8765` no este bloqueado y que OMXPlayer este reproduciendo.
-- `El agente responde, pero su token no coincide`: ejecuta otra vez `INSTALAR_AGENTE.bat` para esa IP.
+- `El agente responde, pero su token no coincide`: ejecuta otra vez `INSTALAR_AGENTE.bat` para esa IP y asegurate de indicar la URL del panel correcto, por ejemplo `http://172.31.139.45`.
 - `El agente esta activo, pero OMXPlayer no responde`: verifica `screenly-viewer.service` y revisa sus registros.
 - La Raspberry aparece sin conexion: pulsa `Actualizar` y verifica primero que su pagina Screenly abre desde el navegador.
 

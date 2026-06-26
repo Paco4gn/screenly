@@ -36,6 +36,7 @@ CONFIG_LOCK = Lock()
 SETTINGS_LOCK = Lock()
 USERS_LOCK = Lock()
 HISTORY_LOCK = Lock()
+MONITOR_CONFIG_LOCK = Lock()
 CURRENT_ASSET_LOCK = Lock()
 CURRENT_ASSET_CACHE = {}
 MAX_FLEET_WORKERS = 10
@@ -417,6 +418,16 @@ def get_history():
 @app.get("/api/health")
 def health():
     return jsonify(ok=True, service="fleetboard", screens=len(load_fleet()))
+
+
+@app.post("/api/monitor-token")
+def monitor_token_api():
+    require_role("admin")
+    data = request.get_json(silent=True) or {}
+    host = validate_private_host(data.get("host"))
+    with MONITOR_CONFIG_LOCK:
+        token, port = ensure_monitor_token(host)
+    return jsonify(host=host, token=token, port=port)
 
 
 @app.post("/api/hosts")
@@ -1398,10 +1409,7 @@ def find_duplicate_asset(assets, name, marker):
 
 
 def load_monitor_config():
-    try:
-        data = json.loads(MONITOR_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"token": "", "tokens": {}, "port": 8765}
+    data = load_monitor_config_raw()
     raw_tokens = data.get("hosts") if isinstance(data.get("hosts"), dict) else {}
     tokens = {}
     for host, value in raw_tokens.items():
@@ -1413,6 +1421,37 @@ def load_monitor_config():
         "tokens": tokens,
         "port": max(1, min(65535, int(data.get("port", 8765)))),
     }
+
+
+def load_monitor_config_raw():
+    try:
+        data = json.loads(MONITOR_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_monitor_config(data):
+    temporary = MONITOR_CONFIG_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, MONITOR_CONFIG_PATH)
+
+
+def ensure_monitor_token(host):
+    data = load_monitor_config_raw()
+    hosts = data.get("hosts") if isinstance(data.get("hosts"), dict) else {}
+    current = hosts.get(host)
+    current_token = current.get("token") if isinstance(current, dict) else current
+    token = str(current_token or "").strip() or str(data.get("token", "")).strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        data["token"] = token
+    if current_token:
+        hosts[host] = {"token": token}
+        data["hosts"] = hosts
+    data["port"] = max(1, min(65535, int(data.get("port", 8765))))
+    save_monitor_config(data)
+    return token, data["port"]
 
 
 def monitor_credentials(host):
