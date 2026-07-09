@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+vendor/
+monitor.json
+.session_secret
+fleet.json
+history.jsonl
+settings.json
+users.json
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,82 @@
+# Instalar el agente de Centro de mando Screenly
+
+Este procedimiento anade el monitor de posicion y video sincronizado a otra Raspberry con Screenly OSE. No actualiza Screenly ni cambia su playlist.
+
+## Requisitos
+
+- El ordenador y la Raspberry deben estar en la misma red.
+- La Raspberry debe estar encendida y tener SSH habilitado.
+- Debes conocer la contrasena SSH del usuario `pi`.
+- Screenly debe estar reproduciendo mediante OMXPlayer.
+
+## Instalacion automatica
+
+1. Desde cualquier ordenador de la red, abre `http://172.31.139.45`.
+2. Entra con un usuario administrador.
+3. Ve a `Centro operativo` y pulsa `Descargar instalador`.
+4. Descomprime `instalador-agente-screenly.zip` en una carpeta local.
+5. Haz doble clic en `INSTALAR_AGENTE.bat`.
+6. Escribe la IP completa, por ejemplo `192.168.20.229`.
+7. Escribe el nombre que aparecera en Centro de mando Screenly.
+8. Escribe la URL del panel. En la VM actual es `http://172.31.139.45`.
+9. Escribe el usuario y contrasena del panel para que el instalador pida el token correcto al servidor.
+10. El instalador utilizara el usuario SSH `pi`.
+11. Escribe la contrasena SSH. Mientras escribes no aparecen caracteres; es normal.
+12. Espera hasta ver el mensaje `LISTO`.
+13. Abre o actualiza `http://172.31.139.45`.
+14. Entra en `En pantalla`.
+
+El instalador se puede ejecutar de nuevo sobre la misma IP para actualizar o reparar el agente. No crea pantallas duplicadas.
+
+Cada Raspberry nueva recibe su propio token de comunicacion desde el servidor. Si ya habia agentes instalados con una version anterior, continuaran funcionando; al ejecutar de nuevo el instalador sobre una de ellas se actualizara el agente y se le asignara el token que conoce el panel de la VM.
+
+## Archivos instalados en la Raspberry
+
+- `/home/pi/fleet_monitor_agent.py`: agente de lectura.
+- `/home/pi/.fleet-monitor-token`: token de comunicacion, con permisos `600`.
+- `/etc/systemd/system/fleet-monitor-agent.service`: servicio de arranque automatico.
+
+El servicio escucha en el puerto TCP `8765` de la red local. La contrasena SSH solo se utiliza durante la instalacion y no se guarda.
+
+## Comprobarlo manualmente
+
+Desde una terminal SSH de la Raspberry:
+
+```bash
+systemctl status fleet-monitor-agent.service
+systemctl status screenly-viewer.service
+```
+
+Los dos deben mostrar `active (running)`.
+
+Para ver los ultimos mensajes del servicio:
+
+```bash
+journalctl -u fleet-monitor-agent.service -n 50 --no-pager
+```
+
+## Desinstalar el agente
+
+Conecta por SSH y ejecuta:
+
+```bash
+sudo systemctl disable --now fleet-monitor-agent.service
+sudo rm /etc/systemd/system/fleet-monitor-agent.service
+sudo systemctl daemon-reload
+rm /home/pi/fleet_monitor_agent.py
+rm /home/pi/.fleet-monitor-token
+```
+
+Despues elimina la pantalla desde el boton `+` situado junto a `Destino` en Centro de mando Screenly. Esto no elimina ni modifica Screenly.
+
+## Problemas habituales
+
+- `Connection timed out`: la IP no responde, la Raspberry esta apagada o SSH esta deshabilitado.
+- `Authentication failed`: usuario o contrasena SSH incorrectos.
+- `El servicio no pudo iniciarse`: revisa el resultado de `journalctl` indicado arriba.
+- El panel muestra la pantalla pero no el video: comprueba que el puerto `8765` no este bloqueado y que OMXPlayer este reproduciendo.
+- `El agente responde, pero su token no coincide`: ejecuta otra vez `INSTALAR_AGENTE.bat` para esa IP y asegurate de indicar la URL del panel correcto, por ejemplo `http://172.31.139.45`.
+- `El agente esta activo, pero OMXPlayer no responde`: verifica `screenly-viewer.service` y revisa sus registros.
+- La Raspberry aparece sin conexion: pulsa `Actualizar` y verifica primero que su pagina Screenly abre desde el navegador.
+
+Por seguridad, cambia la contrasena SSH predeterminada cuando todas las Raspberry esten configuradas. El agente seguira funcionando despues del cambio.

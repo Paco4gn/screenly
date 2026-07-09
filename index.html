@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#172c31">
+    <title>Centro de mando Screenly</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20260625.1">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png?v=20260625.1">
+    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=20260625.1">
+    <link rel="stylesheet" href="styles.css?v=20260626.4">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside id="appSidebar" class="sidebar">
+        <div class="brand">
+          <img class="brand-mark" src="favicon.ico?v=20260625" alt="FEVAL">
+          <div><strong>Centro de mando Screenly</strong><small>FEVAL</small></div>
+        </div>
+
+        <div class="sidebar-main">
+          <nav class="main-nav" aria-label="Navegacion principal">
+            <button class="nav-item active" type="button" data-view="library"><span class="nav-icon">&#9638;</span> Biblioteca</button>
+            <button class="nav-item" type="button" data-view="monitor"><span class="nav-icon">&#9673;</span> En pantalla</button>
+            <button class="nav-item" type="button" data-view="screens"><span class="nav-icon">&#9635;</span> Pantallas</button>
+            <button class="nav-item" type="button" data-view="ops"><span class="nav-icon">&#9881;</span> Centro operativo</button>
+          </nav>
+
+          <section class="sidebar-section">
+            <div class="sidebar-heading">
+              <span>Destino</span>
+              <div class="sidebar-heading-actions">
+                <button id="selectAllBtn" class="text-button" type="button">Todas</button>
+                <button id="manageHostsBtn" class="mini-icon-button" type="button" title="Gestionar pantallas" aria-label="Gestionar pantallas">+</button>
+              </div>
+            </div>
+            <div class="host-list-shell">
+              <div id="hostList" class="host-list"></div>
+            </div>
+          </section>
+
+          <section class="settings-panel" aria-label="Credenciales Screenly">
+            <div class="settings-head">
+              <div>
+                <strong>Credenciales Screenly</strong>
+                <small id="authScopeNote">Configura un acceso global o usa uno propio por Raspberry.</small>
+              </div>
+              <button id="editSelectedAuthBtn" class="settings-link" type="button">Individual</button>
+            </div>
+            <label>Version API
+              <select id="apiVersion">
+                <option value="auto">Deteccion automatica</option>
+                <option value="v2">API v2</option>
+                <option value="v1.2">API v1.2</option>
+              </select>
+            </label>
+            <label class="settings-toggle"><span>Usar credenciales globales</span><input id="useAuth" type="checkbox" role="switch"></label>
+            <div id="authFields" class="auth-fields" hidden>
+              <label>Usuario<input id="username" autocomplete="off" data-lpignore="true" placeholder="screenly"></label>
+              <label>Contrasena<input id="password" type="password" autocomplete="new-password" data-lpignore="true" placeholder="Solo se reemplaza si escribes una nueva"></label>
+              <div class="auth-actions">
+                <button id="saveGlobalAuthBtn" class="settings-button" type="button">Guardar global</button>
+                <button id="clearGlobalAuthBtn" class="settings-button muted" type="button">Usar solo individuales</button>
+              </div>
+            </div>
+            <small id="globalAuthStatus" class="settings-note">Sin credenciales guardadas.</small>
+            <label class="settings-toggle settings-toggle-spaced"><span>Actualizar cada minuto</span><input id="autoRefreshToggle" type="checkbox" role="switch"></label>
+          </section>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="local-dot"></span>
+          <span>Servidor local</span>
+          <small>127.0.0.1:5000</small>
+          <button id="logoutBtn" class="logout-button" type="button">Cerrar sesion</button>
+        </div>
+      </aside>
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Cerrar menu" tabindex="-1"></button>
+
+      <main class="main-area">
+        <header class="topbar">
+          <button id="mobileMenuBtn" class="icon-button mobile-only" type="button" title="Abrir menu" aria-label="Abrir menu" aria-controls="appSidebar" aria-expanded="false">&#9776;</button>
+          <div class="page-heading">
+            <h1 id="pageTitle">Biblioteca de contenidos</h1>
+            <p id="pageSubtitle">Gestion conjunta de 6 pantallas</p>
+          </div>
+          <div class="top-actions">
+            <span id="lastUpdated" class="last-updated">Sin actualizar</span>
+            <div id="playbackControls" class="playback-controls" hidden>
+              <button id="previousAssetBtn" class="icon-button" type="button" title="Contenido anterior" aria-label="Contenido anterior">&#8592;</button>
+              <button id="nextAssetBtn" class="icon-button" type="button" title="Contenido siguiente" aria-label="Contenido siguiente">&#8594;</button>
+            </div>
+            <button id="refreshBtn" class="secondary-button" type="button"><span class="button-icon">&#8635;</span> Actualizar</button>
+            <button id="addAssetBtn" class="primary-button" type="button"><span class="button-icon">+</span> Nuevo contenido</button>
+          </div>
+        </header>
+
+        <div id="libraryView" class="view active">
+          <section class="metrics" aria-label="Resumen de la flota">
+            <div class="metric"><span class="metric-icon online">&#9679;</span><div><strong id="onlineCount">0</strong><small>Pantallas en linea</small></div></div>
+            <div class="metric"><span class="metric-icon active">&#9654;</span><div><strong id="activeCount">0</strong><small>Contenidos activos</small></div></div>
+            <div class="metric"><span class="metric-icon scheduled">&#9719;</span><div><strong id="scheduledCount">0</strong><small>Programados</small></div></div>
+            <div class="metric"><span class="metric-icon offline">!</span><div><strong id="offlineCount">0</strong><small>Sin conexion</small></div></div>
+          </section>
+
+          <section class="content-section">
+            <div class="section-toolbar">
+              <div class="segmented" role="tablist" aria-label="Estado de contenidos">
+                <button class="segment active" type="button" role="tab" aria-selected="true" data-filter="all">Todos <span id="allBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="active">Activos <span id="activeBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="scheduled">Programados <span id="scheduledBadge">0</span></button>
+                <button class="segment" type="button" role="tab" aria-selected="false" data-filter="inactive">Inactivos <span id="inactiveBadge">0</span></button>
+              </div>
+              <div class="toolbar-controls">
+                <label class="search-box"><span>&#9906;</span><input id="searchInput" type="search" placeholder="Buscar contenido"></label>
+                <select id="screenFilter" aria-label="Filtrar por pantalla"><option value="all">Todas las pantallas</option></select>
+                <select id="sortSelect" aria-label="Ordenar contenidos">
+                  <option value="playlist">Orden de reproduccion</option>
+                  <option value="name">Nombre</option>
+                  <option value="screen">Pantalla</option>
+                  <option value="status">Estado</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="bulkBar" class="bulk-bar" hidden>
+              <strong><span id="selectedCount">0</span> seleccionados</strong>
+              <button id="bulkEnableBtn" class="secondary-button compact" type="button">Activar</button>
+              <button id="bulkDisableBtn" class="secondary-button compact" type="button">Desactivar</button>
+              <button id="bulkScheduleBtn" class="secondary-button compact" type="button">Programar</button>
+              <button id="bulkDeleteBtn" class="danger-button compact" type="button">Eliminar</button>
+            </div>
+
+            <div class="table-wrap">
+              <table class="asset-table">
+                <caption class="sr-only">Contenidos disponibles en las pantallas seleccionadas</caption>
+                <thead><tr>
+                  <th class="check-column"><input id="selectVisible" type="checkbox" aria-label="Seleccionar visibles"></th>
+                  <th>Contenido</th><th>Pantalla</th><th>Programacion</th><th>Duracion</th><th>Estado</th><th class="actions-column">Acciones</th>
+                </tr></thead>
+                <tbody id="assetsBody"><tr><td colspan="7"><div class="empty-state"><strong>Cargando contenidos</strong><span>Consultando las pantallas seleccionadas...</span></div></td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div id="screensView" class="view">
+          <section class="screen-section">
+            <div class="section-intro"><div><h2>Estado de pantallas</h2><p>Conexion, API y contenidos detectados en cada reproductor.</p></div></div>
+            <div id="statusGrid" class="screen-grid"></div>
+          </section>
+        </div>
+
+        <div id="monitorView" class="view">
+          <section class="monitor-section">
+            <div class="section-intro monitor-intro">
+              <div><h2>Contenido actual</h2><p>Imagen y posicion sincronizadas con cada reproductor.</p></div>
+              <span class="live-indicator"><i></i> En directo</span>
+            </div>
+            <div id="monitorGrid" class="monitor-grid"></div>
+          </section>
+        </div>
+
+        <div id="opsView" class="view">
+          <section class="screen-section">
+            <div class="section-intro monitor-intro">
+              <div><h2>Centro operativo</h2><p>Diagnostico, alertas, historial y mantenimiento de la flota.</p></div>
+              <div class="ops-actions">
+                <button id="downloadAgentInstallerBtn" class="secondary-button" type="button">Descargar instalador</button>
+                <button id="runDiagnosticsBtn" class="secondary-button" type="button">Ejecutar diagnostico</button>
+              </div>
+            </div>
+            <div class="ops-grid">
+              <section class="ops-panel">
+                <h3>Diagnostico</h3>
+                <div id="diagnosticsList" class="diagnostics-list"></div>
+              </section>
+              <section class="ops-panel">
+                <h3>Alertas</h3>
+                <div id="alertsList" class="alerts-list"></div>
+              </section>
+              <section class="ops-panel wide">
+                <h3>Historial de acciones</h3>
+                <div id="historyList" class="history-list"></div>
+              </section>
+              <section id="usersPanel" class="ops-panel wide users-panel">
+                <h3>Usuarios y roles</h3>
+                <div class="users-toolbar">
+                  <span>Solo los administradores pueden crear cuentas, cambiar roles o bloquear accesos.</span>
+                </div>
+                <div id="usersList" class="users-list"></div>
+                <form id="userAddForm" class="user-add-form">
+                  <label>Correo<input id="newUserEmail" type="email" autocomplete="off" placeholder="usuario@feval.com" required></label>
+                  <label>Contrasena<input id="newUserPassword" type="password" autocomplete="new-password" minlength="8" required></label>
+                  <label>Rol
+                    <select id="newUserRole">
+                      <option value="operator">Operador</option>
+                      <option value="viewer">Solo lectura</option>
+                      <option value="admin">Administrador</option>
+                    </select>
+                  </label>
+                  <button class="primary-button" type="submit">Crear usuario</button>
+                </form>
+              </section>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="assetDialog" class="modal">
+      <form id="assetForm" method="dialog">
+        <header class="modal-header"><div><h2>Nuevo contenido</h2><p>Se anadira a las pantallas seleccionadas.</p></div><button class="close-button" type="button" data-close="assetDialog" aria-label="Cerrar">&times;</button></header>
+        <div class="modal-body">
+          <div class="segmented modal-tabs"><button class="segment active" type="button" data-source="file">Archivo</button><button class="segment" type="button" data-source="url">Direccion web</button></div>
+          <div id="fileSource" class="source-panel active">
+            <label class="drop-zone"><span class="upload-symbol">&#8679;</span><strong>Selecciona un video o imagen</strong><small id="fileName">MP4, MOV, WEBM, JPG o PNG</small><input id="assetFile" name="video" type="file" accept="video/*,image/*"></label>
+          </div>
+          <div id="urlSource" class="source-panel"><label>URL del contenido<input id="assetUrl" name="url" type="url" placeholder="https://ejemplo.com/contenido"></label></div>
+          <div class="form-grid">
+            <label class="span-2">Nombre<input id="assetName" name="name" placeholder="Nombre visible en la lista"></label>
+            <label>Inicio<input id="startDate" name="startDate" type="datetime-local"></label>
+            <label>Fin<input id="endDate" name="endDate" type="datetime-local" value="9999-01-01T00:00"></label>
+            <label>Duracion (segundos)<input id="duration" name="duration" type="number" min="0" value="0"></label>
+            <label class="toggle-field"><span>Activar al crear</span><input id="enabled" name="enabled" type="checkbox" role="switch" checked></label>
+            <label class="toggle-field"><span>Evitar duplicados</span><input id="avoidDuplicates" name="avoidDuplicates" type="checkbox" role="switch" checked></label>
+            <input id="skipAssetCheck" name="skipAssetCheck" type="hidden" value="1">
+          </div>
+        </div>
+        <footer class="modal-footer"><span><b id="targetSummary"></b><small id="uploadStatus" class="upload-status" role="status"></small></span><div><button class="secondary-button" type="button" data-close="assetDialog">Cancelar</button><button id="submitAssetBtn" class="primary-button" type="submit">Anadir contenido</button></div></footer>
+      </form>
+    </dialog>
+
+    <dialog id="editDialog" class="modal small-modal">
+      <form id="editForm" method="dialog">
+        <header class="modal-header"><div><h2>Editar programacion</h2><p id="editHostLabel"></p></div><button class="close-button" type="button" data-close="editDialog" aria-label="Cerrar">&times;</button></header>
+        <div class="modal-body form-grid">
+          <input id="editHost" type="hidden"><input id="editAssetId" type="hidden">
+          <label class="span-2">Nombre<input id="editName" required></label>
+          <label>Inicio<input id="editStartDate" type="datetime-local"></label>
+          <label>Fin<input id="editEndDate" type="datetime-local"></label>
+          <label>Duracion (segundos)<input id="editDuration" type="number" min="0"></label>
+          <label class="toggle-field"><span>Contenido activo</span><input id="editEnabled" type="checkbox" role="switch"></label>
+        </div>
+        <footer class="modal-footer"><span></span><div><button class="secondary-button" type="button" data-close="editDialog">Cancelar</button><button class="primary-button" type="submit">Guardar cambios</button></div></footer>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="confirm-modal">
+      <form method="dialog"><h2 id="confirmTitle">Confirmar accion</h2><p id="confirmText"></p><div><button class="secondary-button" value="cancel">Cancelar</button><button id="confirmAccept" class="danger-button" value="confirm">Eliminar</button></div></form>
+    </dialog>
+
+    <dialog id="fleetDialog" class="modal fleet-modal">
+      <div>
+        <header class="modal-header"><div><h2>Gestionar pantallas</h2><p>Anade, renombra o elimina Raspberry de la flota.</p></div><button class="close-button" type="button" data-close="fleetDialog" aria-label="Cerrar">&times;</button></header>
+        <div class="modal-body">
+          <div id="hostManageList" class="host-manage-list"></div>
+          <form id="hostAddForm" class="host-add-form">
+            <label>Nombre<input id="newHostName" maxlength="60" placeholder="Sala principal"></label>
+            <label>Direccion IP<input id="newHostIp" inputmode="decimal" placeholder="192.168.20.229" required></label>
+            <button class="primary-button" type="submit">Anadir Raspberry</button>
+          </form>
+        </div>
+        <footer class="modal-footer"><span>Los cambios solo afectan a este panel.</span><div><button class="secondary-button" type="button" data-close="fleetDialog">Cerrar</button></div></footer>
+      </div>
+    </dialog>
+
+    <dialog id="scheduleDialog" class="modal small-modal">
+      <form id="scheduleForm" method="dialog">
+        <header class="modal-header"><div><h2>Programacion masiva</h2><p>Aplicar fechas, duracion y estado a los contenidos seleccionados.</p></div><button class="close-button" type="button" data-close="scheduleDialog" aria-label="Cerrar">&times;</button></header>
+        <div class="modal-body form-grid">
+          <label>Inicio<input id="bulkStartDate" type="datetime-local"></label>
+          <label>Fin<input id="bulkEndDate" type="datetime-local" value="9999-01-01T00:00"></label>
+          <label>Duracion (segundos)<input id="bulkDuration" type="number" min="0" value="0"></label>
+          <label class="toggle-field"><span>Contenido activo</span><input id="bulkEnabled" type="checkbox" role="switch" checked></label>
+        </div>
+        <footer class="modal-footer"><span id="scheduleSummary"></span><div><button class="secondary-button" type="button" data-close="scheduleDialog">Cancelar</button><button class="primary-button" type="submit">Aplicar</button></div></footer>
+      </form>
+    </dialog>
+
+    <div id="toastRegion" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+    <script src="app.js?v=20260626.4"></script>
+  </body>
+</html>
